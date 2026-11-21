@@ -1,0 +1,205 @@
+/* 锁频锁小区页：生效状态、候选小区、待提交托盘。数值一律取自 tokens.css。 */
+
+.status-grid {
+  display: grid;
+  align-items: stretch;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.5fr) minmax(0, 1.5fr);
+  gap: var(--space-3-5);
+}
+
+.status-box {
+  min-width: 0;
+  padding: var(--space-3-5) var(--space-4);
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.status-box--ok {
+  background: color-mix(in srgb, var(--color-success) 5%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-success) 20%, var(--color-border));
+}
+
+.status-box--warn {
+  background: color-mix(in srgb, var(--color-warning) 7%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-warning) 28%, var(--color-border));
+}
+
+.status-box-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  margin-bottom: var(--space-3);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+}
+
+.status-lock-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.status-box-sub {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+}
+
+.status-note {
+  margin-top: var(--space-3-5);
+  padding: var(--space-2-5) var(--space-3-5);
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.manual-entry-box {
+  margin-bottom: var(--space-4);
+  padding: var(--space-3-5) var(--space-4);
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.manual-row {
+  display: grid;
+  align-items: start;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: var(--space-3) var(--space-4);
+}
+
+/* 与带标签的输入框顶端对齐：下移一个字段标签行高 + 标签与输入框间距 */
+.manual-add-btn.semi-button {
+  margin-top: calc(var(--font-size-sm) * var(--line-height-normal) + var(--space-1-5));
+}
+
+.candidate-head,
+.candidate-row {
+  display: grid;
+  align-items: center;
+  gap: var(--space-3);
+  grid-template-columns: 20px 56px 120px 100px 110px minmax(0, 1fr);
+}
+
+.candidate-head {
+  padding: 0 var(--space-3) var(--space-2);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+}
+
+.candidate-list {
+  display: flex;
+  max-height: 340px;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  overflow-y: auto;
+  padding: var(--space-1);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  scrollbar-width: thin;
+}
+
+.candidate-row {
+  padding: var(--space-2);
+  font-size: var(--font-size-sm);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-standard);
+}
+
+.candidate-row:hover {
+  background: var(--color-surface-subtle);
+}
+
+.candidate-row.active {
+  background: var(--color-accent-tint);
+}
+
+.candidate-freq,
+.candidate-pci,
+.candidate-rsrp {
+  font-variant-numeric: tabular-nums;
+}
+
+.candidate-freq {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.candidate-pci,
+.candidate-rsrp {
+  color: var(--color-text-secondary);
+}
+
+.candidate-head-status {
+  text-align: right;
+}
+
+.candidate-lock {
+  display: flex;
+  gap: var(--space-1);
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.draft-tray {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  flex-wrap: wrap;
+  margin-top: var(--space-3-5);
+}
+
+.draft-tray-label {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+}
+
+.lock-footer-bar {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2-5);
+  flex-wrap: wrap;
+}
+
+@media (max-width: 1180px) {
+  .status-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 767px) {
+  .manual-row {
+    grid-template-columns: 1fr;
+  }
+
+  .manual-add-btn.semi-button {
+    margin-top: 0;
+  }
+
+  .candidate-head {
+    display: none;
+  }
+
+  .candidate-head,
+  .candidate-row {
+    grid-template-columns: 20px 48px minmax(0, 1fr) 80px;
+  }
+
+  .candidate-rsrp,
+  .candidate-lock:empty {
+    display: none;
+  }
+
+  .candidate-lock {
+    grid-column: 2 / -1;
+    justify-content: flex-start;
+  }
+}

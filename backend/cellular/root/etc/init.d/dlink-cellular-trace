@@ -1,0 +1,14 @@
+#!/bin/sh /etc/rc.common
+USE_PROCD=1
+
+start_service() {
+	case "$1" in 30|120|300) ;; *) return 0;; esac
+	[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = dlink,dwr-be7200g ] || return 1
+	local dir=/tmp/dlink-cellular-trace
+	umask 077
+	[ ! -L "$dir" ] && mkdir -p "$dir" || return 1
+	procd_open_instance capture
+	procd_set_param command /usr/libexec/dlink-cell-diag trace "$1"
+	procd_set_param term_timeout 5
+	procd_close_instance
+}

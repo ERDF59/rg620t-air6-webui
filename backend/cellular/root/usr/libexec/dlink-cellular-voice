@@ -1,0 +1,125 @@
+#!/bin/sh
+
+error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
+[ "$#" -ge 1 ] || { error input; exit 0; }
+op="$1"
+shift
+parser=/usr/libexec/dlink-cellular-voice.awk
+at() { timeout 9 /usr/bin/mipc_wan_cli --at_cmd "$1" 2>/dev/null; }
+exec 9>/var/lock/dlink-cellular.lock || { error busy; exit 0; }
+flock -w 1 9 || { error busy; exit 0; }
+
+at_ok=0
+calls=
+if raw="$(at AT+CLCC)" && calls="$(printf '%s\n' "$raw" | awk -v query=calls -f "$parser")"; then
+	at_ok=1
+fi
+# MIPC IDs are not AT call indices. Use them only for observation.
+if [ -z "$calls" ]; then
+	case "$op" in
+	status|dial)
+		native=
+		if out="$(timeout 2 /usr/bin/mipc_wan_cli --get_call_status 2>/dev/null)" &&
+		   native="$(printf '%s\n' "$out" | awk -f /usr/libexec/dlink-cellular-mipc-calls.awk)"; then
+			case "$native" in
+			count:0) ;;  # AT's valid empty result remains actionable.
+			*) if [ "$op" = dial ]; then error call_present; exit 0; fi;;
+			esac
+			if [ "$op" = status ] && { [ "$at_ok" = 0 ] || [ "$native" != count:0 ]; }; then
+				printf '{"ok":true,"browser_audio":false,"source":"mipc","read_only":true,"calls":['
+				comma=
+				for row in $native; do
+					case "$row" in count:*) continue;; esac
+					printf '%s{"state":%s,"direction":null,"kind":null,"number":""}' "$comma" "${row#*:}"
+					comma=,
+				done
+				printf ']}\n'
+				exit 0
+			fi
+		fi
+		;;
+	esac
+fi
+[ "$at_ok" = 1 ] || { error voice_status_unavailable; exit 0; }
+
+count=0
+active=
+for row in $calls; do count=$((count+1)); active=$row; done
+
+case "$op" in
+	status)
+		web=false; [ ! -S /var/run/dlink-webvoice.sock ] || web=true
+                printf '{"ok":true,"browser_audio":%s,"calls":[' "$web"
+		comma=
+		for row in $calls; do
+			IFS=: read -r id direction state kind number vendor_voice <<-LINE
+				$row
+			LINE
+			extra=
+			[ "$vendor_voice" = v ] && extra=',"voice":true'
+			printf '%s{"id":%s,"direction":%s,"state":%s,"kind":%s,"number":"%s"%s}' "$comma" "$id" "$direction" "$state" "$kind" "$number" "$extra"
+			comma=,
+		done
+		printf ']}\n'
+		exit 0
+		;;
+	dial)
+		[ "$#" -eq 1 ] || { error input; exit 0; }
+		[ "$count" -eq 0 ] || { error call_present; exit 0; }
+		number="$1"
+		digits="${number#+}"
+		case "$digits" in ''|*[!0-9]*) error number; exit 0;; esac
+		[ "${#digits}" -ge 3 ] && [ "${#digits}" -le 15 ] || { error number; exit 0; }
+		case "$number" in 1[3-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) number="+86$number";; esac
+		command="ATD$number;"
+		;;
+	answer|hangup|dtmf)
+		[ "$count" -eq 1 ] || { error call_changed; exit 0; }
+		IFS=: read -r id direction state kind number vendor_voice <<-LINE
+			$active
+		LINE
+		{ [ "$kind" = 0 ] || [ "$kind:$vendor_voice" = 20:v ]; } && [ "${1:-}" = "$id" ] || { error call_changed; exit 0; }
+		# A popup refers to the displayed incoming caller; do not reject an answered/reused slot.
+		if [ "$op" != dtmf ] && [ "${2:-}" = ringing_only ]; then
+			[ "$direction:$state" = 1:4 ] && [ "$number" = "${3:-}" ] || { error call_changed; exit 0; }
+		fi
+		case "$op" in
+			answer)
+				[ "$direction:$state" = 1:4 ] || { error not_ringing; exit 0; }
+				command=ATA
+				;;
+			hangup)
+				case "$state" in 0|1|2|3|4|5) ;; *) error call_changed; exit 0;; esac
+				command=AT+CHUP
+				;;
+			dtmf)
+				[ "$state" = 0 ] || { error not_active; exit 0; }
+                case "${2:-}" in [0-9]|'*'|'#') :;; *) error tone; exit 0;; esac
+                # Locks above bind a user click to one active CLCC voice call. Do not retry after an ambiguous result.
+                rc=0
+                (unset LD_PRELOAD LD_LIBRARY_PATH; exec timeout 8 /usr/libexec/dlink-dtmf "$2") </dev/null >/dev/null 2>&1 || rc=$?
+                case "$rc" in
+                    0)  result=confirmed;;
+                    21) result=dtmf_setup;;
+                    23) result=dtmf_rejected;;
+                    *)  result=dtmf_unconfirmed;;
+                esac
+                logger -t dlink-dtmf "mipc_single_tone: $result" 2>/dev/null || :
+                if [ "$result" = confirmed ]; then
+                    printf '%s\n' '{"ok":true,"transport":"mipc_single_tone","ack":"modem"}'
+                else error "$result"; fi
+                exit 0
+				;;
+		esac
+		;;
+	*) error input; exit 0;;
+esac
+
+answer="$(at "$command")" || { error voice_timeout; exit 0; }
+if printf '%s\n' "$answer" | awk -f "$parser"; then
+	echo '{"ok":true}'
+elif printf '%s\n' "$answer" | grep -Eq '^([+]CME ERROR|ERROR|NO CARRIER|BUSY|NO ANSWER|NO DIALTONE)'; then
+	error voice_rejected
+else
+	error voice_unconfirmed
+fi

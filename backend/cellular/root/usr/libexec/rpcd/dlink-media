@@ -1,0 +1,69 @@
+#!/bin/sh
+case "$1" in
+list) echo '{"marker":{"id":"","confirm":true},"uplink_marker":{"id":"","confirm":true},"downlink_marker":{"id":"","confirm":true}}';exit;;
+call) case "$2" in marker) mode=marker;;uplink_marker) mode=marker-tx;;downlink_marker) mode=rx;;*)exit 1;;esac;;
+*) exit 1;;
+esac
+fail(){ printf '{"ok":false,"error":"%s"}\n' "$1";exit 0; }
+[ "$(cat /tmp/sysinfo/board_name)" = dlink,dwr-be7200g ] || fail board
+awk -F: '$1=="root" && $2!="" && $2 !~ /^[!*]/ {n=1}END{exit !n}' /etc/shadow || fail password_required
+. /usr/share/libubox/jshn.sh
+json_load "$(cat)" || fail input; json_get_var ack confirm;json_get_type type confirm;json_get_var id id
+[ "$type:$ack" = boolean:1 ] || fail confirm
+case "$id" in ''|*[!0-9]*) fail input;;esac
+voice_local(){
+ local v ids states
+ v="$(/usr/libexec/dlink-cellular-voice status)" || return 1
+ ids="$(printf %s "$v"|jsonfilter -e '@.calls[*].id')"
+ states="$(printf %s "$v"|jsonfilter -e '@.calls[*].state')"
+ [ "$ids" = "$id" ] && [ "$states" = 0 ] && [ "$(t830-call-media-test status)" = active ]
+}
+exec 7>/var/lock/t830-speech-session.lock;flock -n 7 || fail busy
+voice_local || fail call_changed
+r=$(readlink /var/run/t830-speech-root) || fail speech_offline
+case "$r" in /tmp/t830-speech.??????);;*)fail speech_offline;;esac
+test -S "$r/tmp/socket-sphdrv" || fail speech_offline
+if [ "$mode" = marker-tx ] && [ ! -x /usr/lib/t830-speech/speechd-route ]; then fail route_unsupported;fi
+unset LD_PRELOAD LD_LIBRARY_PATH
+# Only our bounded, packaged test generator is passed into the factory runtime.
+if [ "$mode" != rx ];then cp /usr/libexec/dlink-bgs-marker "$r/usr/bin/dlink-bgs-marker" || fail marker;fi
+t=$(mktemp /tmp/dlink-bgs.XXXXXX) || fail marker
+cleanup(){ timeout 7 chroot "$r" /usr/bin/dlink-speechctl close >/dev/null 2>&1 || :; rm -f "$t"; }
+trap cleanup EXIT;trap 'exit 1' HUP TERM INT
+# Log only state/counters of the test the user explicitly started.
+before=$(cat "$r/events" 2>/dev/null || :)
+timeout 7 chroot "$r" /usr/bin/dlink-speechctl open >/dev/null 2>&1 || fail speech_open
+voice_local || fail call_changed
+if [ "$mode" = rx ]; then
+ exec 8>/var/lock/t830-call-media-test.lock; flock -n 8 || fail busy
+ /usr/libexec/t830-rx-channels measure >"$t" 2>&1 & child=$!
+ stop_rx(){ kill -TERM "$child" 2>/dev/null || :;wait "$child" 2>/dev/null || :; }
+ trap 'stop_rx;exit 1' HUP TERM INT
+ changed=0
+ while kill -0 "$child" 2>/dev/null;do sleep 1;voice_local || { changed=1; stop_rx;break; };done
+ [ "$changed" = 0 ] || fail call_changed
+ wait "$child" || fail rx_io
+ timeout 7 chroot "$r" /usr/bin/dlink-speechctl close >/dev/null 2>&1 || fail speech_close
+ trap 'rm -f "$t"' EXIT;trap - HUP TERM INT
+ row=$(grep -E '^RX frames=[0-9]+ peak_ch1=[0-9]+ peak_ch2=[0-9]+ marker_ch1=[0-9]+ marker_ch2=[0-9]+$' "$t") || fail rx_io
+ set -- $row
+ a=${5#marker_ch1=} b=${6#marker_ch2=}
+ { date -u;printf '%s\n' "$row"; } >"$r/last-downlink"
+ if [ "$a" -ge 8 ] || [ "$b" -ge 8 ];then detected=true;else detected=false;fi
+ printf '{"ok":true,"detected":%s,"left":%s,"right":%s}\n' "$detected" "$a" "$b"
+ exit 0
+fi
+rc=0
+timeout -k 2 8 chroot "$r" /usr/bin/dlink-bgs-marker "$mode" > /dev/null 2>"$t" || rc=$?
+timeout 7 chroot "$r" /usr/bin/dlink-speechctl close >/dev/null 2>&1 || fail speech_close
+trap 'rm -f "$t"' EXIT
+row=$(grep -oE 'BGS_RESULT written=[0-9]+ initial=[0-9]+ final=[0-9]+ taken=[0-9]+ peak=[0-9]+ closed=0 io=1' "$t" |tail -1)
+if [ "$rc" -ne 0 ] || [ -z "$row" ];then fail marker;fi
+# Output from our bounded helper only. No caller IDs, samples, or raw vendor log.
+written=$(printf '%s' "$row"|cut -d' ' -f2|cut -d= -f2)
+init=$(printf '%s' "$row"|cut -d' ' -f3|cut -d= -f2)
+taken=$(printf '%s' "$row"|cut -d' ' -f5|cut -d= -f2)
+after=$(cat "$r/events" 2>/dev/null || :)
+{ date -u; printf '%s\n' "$row" "mode=$mode" "before $before" "after $after"; } >"$r/last-marker"
+if [ "$taken" -le "$init" ];then phase=not_drained;elif [ "$written" -lt 192000 ] || [ "$taken" -lt "$((init+written-1280))" ];then phase=partial;else phase=drained;fi
+printf '{"ok":true,"phase":"%s","written":%s,"taken":%s}\n' "$phase" "$written" "$taken"

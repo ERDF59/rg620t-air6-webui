@@ -1,0 +1,78 @@
+{
+  "luci-app-dlink-cellular": {
+    "description": "D-Link cellular signal and lock readback",
+    "read": {
+      "ubus": {
+        "dlink-cellular": [
+          "overview",
+          "summary",
+          "qos",
+          "locks",
+          "access"
+        ],
+        "network.interface.wan": [
+          "status"
+        ]
+      }
+    }
+  },
+  "luci-app-dlink-cellular-private": {
+    "description": "Read cellular SMS and change radio locks or send SMS",
+    "read": {
+      "ubus": {
+        "dlink-cellular": [
+          "sms_list",
+          "sms_read",
+          "diag",
+          "diag_checks",
+          "capture_status"
+        ]
+      }
+    },
+    "write": {
+      "ubus": {
+        "dlink-cellular": [
+          "band_set",
+          "cell_set",
+          "cell_clear",
+          "cell_list_set",
+          "cell_list_clear",
+          "sms_send",
+          "capture_start",
+          "capture_stop",
+          "wan_redial"
+        ]
+      }
+    }
+  },
+  "luci-app-dlink-cellular-voice": {
+    "description": "View SIM calls and explicitly place, answer, end, or send in-call tones",
+    "read": {
+      "ubus": {
+        "dlink-cellular": [
+          "voice_status"
+        ]
+      }
+    },
+    "write": {
+      "ubus": {
+        "dlink-cellular": [
+          "voice_dial",
+          "voice_answer",
+          "voice_hangup",
+          "voice_dtmf"
+        ],
+        "dlink-media": [
+          "marker",
+          "uplink_marker",
+          "downlink_marker"
+        ],
+        "dlink-webvoice": [
+          "open",
+          "pulse",
+          "close"
+        ]
+      }
+    }
+  }
+}

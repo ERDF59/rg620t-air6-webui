@@ -1,0 +1,8 @@
+{
+  "admin/network/dlink-cellular": {
+    "title": "蜂窝管理",
+    "order": 27,
+    "action": {"type": "view", "path": "dlink-cellular/index"},
+    "depends": {"acl": ["luci-app-dlink-cellular"]}
+  }
+}

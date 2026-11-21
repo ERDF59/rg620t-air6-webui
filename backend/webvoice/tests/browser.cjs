@@ -1,0 +1,9 @@
+const {chromium}=require(process.env.PW_CORE||'playwright-core');
+const path=require('path');
+(async()=>{const b=await chromium.launch({executablePath:process.env.CHROMIUM_PATH,headless:true,args:['--autoplay-policy=no-user-gesture-required']});
+try{const p=await b.newPage({viewport:{width:920,height:720}});p.on('pageerror',e=>console.error('PAGE',e.message));await p.goto(process.argv[2]+'/lab.html');await p.getByRole('button',{name:'启用麦克风和扬声器'}).click();await p.waitForFunction(()=>document.querySelector('.dcx-webvoice')?.dataset.phase==='live',{},{timeout:19000}).catch(async e=>{throw Error(await p.locator('.dcx-webvoice').innerText())});
+const level=await p.evaluate(async()=>{const a=mctx.createAnalyser();const x=mctx.createMediaStreamSource(document.querySelector('audio').srcObject);x.connect(a);await new Promise(r=>setTimeout(r,250));let f=new Uint8Array(a.frequencyBinCount);a.getByteFrequencyData(f);let top=f.indexOf(Math.max(...f));return [top*mctx.sampleRate/a.fftSize,Math.max(...f)]});if(!(level[0]>600&&level[0]<710&&level[1]>80))throw Error('No decoded downlink tone: '+JSON.stringify(level));
+await p.getByRole('button',{name:'静音麦克风',exact:true}).click();if(await p.evaluate(()=>srcTrack.enabled))throw Error('mute');await p.getByRole('button',{name:'取消麦克风静音'}).click();
+await p.screenshot({path:path.join(__dirname,'phone-live.png')});await p.setViewportSize({width:390,height:844});await p.locator('.dcx-webvoice').scrollIntoViewIfNeeded();await p.screenshot({path:path.join(__dirname,'phone-mobile.png')});
+await p.evaluate(()=>fetch('/end-test-call',{method:'POST'}));await p.waitForFunction(()=>window.srcTrack.readyState==='ended'&&document.querySelector('.dcx-webvoice').dataset.phase==='off',null,{timeout:9000});console.log('DUPLEX_PASS synthetic microphone RTP reached gateway; browser decoded downlink',level,'Hz/level; mute, call-end release passed');
+}finally{await b.close()}})().catch(e=>{console.error(e);process.exitCode=1})

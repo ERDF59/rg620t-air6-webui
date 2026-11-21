@@ -1,0 +1,8 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>通话音频联调</title><link rel="stylesheet" href="/ui/cellular.css"><style>body{font:16px system-ui;margin:24px;color:#182c40}.dcx{max-width:900px;margin:auto}button{font:inherit}</style><main class="dcx"><h2>蜂窝管理 · 电话</h2><div id="phone"></div></main><script>
+window.E=(tag,attrs,contents)=>{const n=document.createElement(tag);for(const [k,v] of Object.entries(attrs||{})){if(typeof v==='function')n.addEventListener(k,v);else n.setAttribute(k,v)};for(const c of [].concat(contents??[])){if(c!=null)n.append(c)}return n};
+const rpc={declare:spec=>async(...v)=>{if(spec.object==='dlink-cellular'){return {ok:true,browser_audio:true,calls:[{id:7,state:0,direction:1,kind:0,number:'100'}]}}
+ const args=Object.fromEntries(spec.params.map((k,i)=>[k,v[i]]));return fetch('/rpc',{method:'POST',body:JSON.stringify({...args,method:spec.method})}).then(r=>r.json());}};
+(async()=>{const baseclass={extend:x=>x}; const w=new Function('baseclass','rpc',await(await fetch('/ui/webvoice.js')).text())(baseclass,rpc);
+const p=new Function('baseclass','rpc','webvoice',await(await fetch('/ui/phone.js')).text())(baseclass,rpc,w).create(()=>{});document.querySelector('#phone').append(p.panel);await p.refresh();
+Object.defineProperty(navigator.mediaDevices,'getUserMedia',{value:async()=>{const ctx=window.mctx=new AudioContext();await ctx.resume();const dest=ctx.createMediaStreamDestination(),osc=ctx.createOscillator();osc.frequency.value=440;osc.connect(dest);osc.start();window.srcTrack=dest.stream.getAudioTracks()[0];return dest.stream;}});
+})();</script></html>

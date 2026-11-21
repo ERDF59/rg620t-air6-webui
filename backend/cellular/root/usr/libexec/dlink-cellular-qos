@@ -1,0 +1,25 @@
+#!/bin/sh
+
+case "$1" in
+	"5G SA") mode=C5GQOSRDP; label=5QI;;
+	LTE|"5G NSA") mode=CGEQOSRDP; label=QCI;;
+	*) printf '{"ok":false,"error":"unavailable"}\n'; exit 0;;
+esac
+exec 9>/var/lock/dlink-cellular.lock || exit 1
+flock -w 1 9 || { echo '{"ok":false,"error":"busy"}'; exit 0; }
+
+parser=/usr/libexec/dlink-cellular-qos.awk
+at() { timeout 2 /usr/bin/mipc_wan_cli --at_cmd "$1" 2>/dev/null; }
+sessions="$(at AT+CGCONTRDP | awk -v mode=contexts -f "$parser")"
+printf '{"ok":true,"kind":"%s","sessions":[' "$label"
+comma=
+for session in $sessions; do
+	cid=${session%%:*}
+	apn=${session#*:}
+	values="$(at "AT+$mode=$cid" | awk -v "id=$cid" -v "verb=$mode" -v mode=classes -f "$parser")"
+	[ -n "$values" ] || continue
+	case "$apn" in ims|ims.*) role=ims;; *) role=data;; esac
+	printf '%s{"cid":%s,"apn":"%s","role":"%s","classes":[%s]}' "$comma" "$cid" "$apn" "$role" "$values"
+	comma=,
+done
+printf ']}\n'

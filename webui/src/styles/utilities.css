@@ -1,0 +1,31 @@
+/* 工具类：最后加载，保证覆盖组件默认色。
+   语义色调 .tone-* 只设置 color；需要填充的元素在组件样式里写 background-color: currentColor，
+   这样 TSX 只传 tone 名（src/ui/tokens.ts 的 Tone），不碰任何色值。 */
+
+.tone-neutral {
+  color: var(--color-text-tertiary);
+}
+
+.tone-accent {
+  color: var(--color-accent-text);
+}
+
+.tone-success {
+  color: var(--color-success);
+}
+
+.tone-warning {
+  color: var(--color-warning);
+}
+
+.tone-danger {
+  color: var(--color-danger);
+}
+
+.tone-down {
+  color: var(--color-series-down);
+}
+
+.tone-up {
+  color: var(--color-series-up);
+}

@@ -1,0 +1,75 @@
+/* 登录页。数值一律取自 tokens.css。 */
+
+.login-shell {
+  position: relative;
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  background:
+    radial-gradient(900px 480px at 50% -8%, color-mix(in srgb, var(--color-accent) 12%, transparent), transparent 70%),
+    var(--color-bg);
+}
+
+.login-top-action {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+}
+
+.login-card.semi-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--color-surface);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-raised);
+}
+
+.login-card .semi-card-body {
+  padding: var(--space-8) var(--space-8) var(--space-6);
+}
+
+.login-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1-5);
+  margin-bottom: var(--space-6);
+  text-align: center;
+}
+
+.login-brand-mark img {
+  display: block;
+  width: 56px;
+  height: 56px;
+}
+
+.login-brand-title {
+  margin-top: var(--space-2);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-snug);
+}
+
+.login-brand-sub {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm);
+}
+
+.login-submit.semi-button {
+  margin-top: var(--space-2);
+}
+
+.login-footer {
+  margin-top: var(--space-4);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+  text-align: center;
+}
+
+.rg-auth-form { display:grid; gap:var(--space-2); }
+.rg-auth-form label { font-size:var(--font-size-md); font-weight:var(--font-weight-semibold); color:var(--color-text-primary); }
+.rg-auth-form label:not(:first-child) { margin-top:var(--space-2); }
+.rg-login-error { margin:var(--space-2) 0 0; color:var(--color-danger); line-height:var(--line-height-normal); }

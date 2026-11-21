@@ -1,0 +1,102 @@
+#!/bin/sh
+
+if [ "$1" = list ]; then
+	cat <<'JSON'
+{"overview":{},"summary":{},"qos":{"rat":""},"locks":{},"access":{},"diag":{},"diag_checks":{},"voice_status":{},"voice_dial":{"number":"","confirm":true},"voice_answer":{"id":"","confirm":true,"ringing_only":true,"peer":""},"voice_hangup":{"id":"","confirm":true,"ringing_only":true,"peer":""},"voice_dtmf":{"id":"","key":"","confirm":true},"capture_status":{},"capture_start":{"seconds":0,"confirm":true},"capture_stop":{},"wan_redial":{"confirm":true},"band_set":{"rat":"", "bands":"", "confirm":true},"cell_set":{"rat":"", "arfcn":"", "pci":"", "confirm":true},"cell_clear":{"confirm":true},"cell_list_set":{"cells":"", "confirm":true},"cell_list_clear":{"confirm":true},"sms_list":{},"sms_read":{"index":0},"sms_send":{"to":"", "body":"", "confirm":true}}
+JSON
+	exit 0
+fi
+[ "$1" = call ] || exit 1
+error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
+protected() {
+	awk -F: '$1=="root" && $2!="" && $2 !~ /^[!*]/ {n=1} END {exit !n}' /etc/shadow
+}
+run() {
+	local result
+	if result="$(timeout 20 /usr/libexec/dlink-cellular "$@" 2>/dev/null)" && [ -n "$result" ]; then
+		printf '%s\n' "$result"
+	else
+		error timeout
+	fi
+}
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = dlink,dwr-be7200g ] || { error board; exit 0; }
+
+case "$2" in
+	access)
+		if protected; then echo '{"ok":true,"protected":true}'; else echo '{"ok":true,"protected":false}'; fi
+		;;
+	overview|summary|locks) run "$2";;
+	voice_status)
+		protected || { error password_required; exit 0; }
+		/usr/libexec/dlink-cellular-voice status
+		;;
+	diag)
+		protected || { error password_required; exit 0; }
+		out="$(timeout 18 /usr/libexec/dlink-cell-diag query 2>/dev/null)" && [ -n "$out" ] &&
+			printf '%s\n' "$out" || error timeout
+		;;
+	capture_status|capture_stop|diag_checks)
+		protected || { error password_required; exit 0; }
+		case "$2" in
+			capture_status) manage=status;; capture_stop) manage=stop;; diag_checks) manage=checks;;
+		esac
+		/usr/libexec/dlink-cellular-control "$manage"
+		;;
+	qos)
+		. /usr/share/libubox/jshn.sh
+		json_load "$(cat)" || { error input; exit 0; }
+		json_get_var rat rat
+		/usr/libexec/dlink-cellular-qos "$rat"
+		;;
+	sms_list|sms_read|sms_send|band_set|cell_set|cell_clear|cell_list_set|cell_list_clear|capture_start|wan_redial|voice_dial|voice_answer|voice_hangup|voice_dtmf)
+		protected || { error password_required; exit 0; }
+		. /usr/share/libubox/jshn.sh
+		input="$(cat)"
+		json_load "$input" || { error input; exit 0; }
+		case "$2" in
+			sms_list) run sms_list;;
+			sms_read) json_get_var index index; run sms_read "$index";;
+			*)
+				json_get_var confirmed confirm
+				json_get_type ctype confirm
+				[ "$ctype:$confirmed" = boolean:1 ] || { error confirm; exit 0; }
+				case "$2" in
+					band_set) json_get_var rat rat; json_get_var bands bands; run band_set "$rat" "$bands";;
+					cell_set) json_get_var rat rat; json_get_var arfcn arfcn; json_get_var pci pci; run cell_set "$rat" "$arfcn" "$pci";;
+					cell_clear) run cell_set clear;;
+					capture_start) json_get_var seconds seconds; /usr/libexec/dlink-cellular-control start "$seconds";;
+					wan_redial) /usr/libexec/dlink-cellular-control redial;;
+					voice_dial) json_get_var number number; /usr/libexec/dlink-cellular-voice dial "$number";;
+					voice_answer|voice_hangup)
+						json_get_var id id
+						json_get_type rt ringing_only || :
+						case "$rt" in
+							'') /usr/libexec/dlink-cellular-voice "${2#voice_}" "$id";;
+							boolean)
+								json_get_var rr ringing_only
+								if [ "$rr" = 1 ];then
+									json_get_type pt peer; [ "$pt" = string ] || { error input; exit 0; }
+									json_get_var peer peer
+									/usr/libexec/dlink-cellular-voice "${2#voice_}" "$id" ringing_only "$peer"
+								else /usr/libexec/dlink-cellular-voice "${2#voice_}" "$id";fi;;
+							*) error input;;
+						esac;;
+					voice_dtmf)
+						json_get_var id id; json_get_var key key
+						/usr/libexec/dlink-cellular-voice dtmf "$id" "$key";;
+					cell_list_set)
+						json_get_var cells cells
+						[ "$cells" != clear ] || { error input; exit 0; }
+						run cell_list "$cells";;
+					cell_list_clear) run cell_list clear;;
+					sms_send)
+						json_get_var to to; json_get_var body body
+						case "$to" in *[!0-9+]*) error input; exit 0;; esac
+						printf '%s\n%s' "$to" "$body" | run sms_send
+						;;
+				esac
+				;;
+		esac
+		;;
+	*) error input;;
+esac

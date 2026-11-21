@@ -1,0 +1,366 @@
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/file.h>
+#include "ql_nw.h"
+#include "ql_sms.h"
+#include "sms-submit.h"
+
+#define COUNT(a) (sizeof(a) / sizeof((a)[0]))
+static void fail(const char *error, int code)
+{
+	printf("{\"ok\":false,\"error\":\"%s\",\"code\":%d}\n",error,code);
+}
+static void num(int value, int min, int max)
+{
+	if (value<min || value>max) printf("null"); else printf("%d",value);
+}
+static const char *rat(int value)
+{
+	switch (value) {
+	case QL_NW_RADIO_TECH_LTE: return "LTE";
+	case QL_NW_RADIO_TECH_NR5G: return "5G SA";
+	case QL_NW_RADIO_TECH_NSA5G: return "5G NSA";
+	case QL_NW_RADIO_TECH_GSM: return "GSM";
+	case QL_NW_RADIO_TECH_UMTS: return "UMTS";
+	default: return "";
+	}
+}
+static void digit_str(const char *s, size_t max)
+{
+	for (; max && *s>='0' && *s<='9'; s++,max--) putchar(*s);
+}
+static void signal_values(int rsrp, int rsrq, int snr, int rssi, int nr)
+{
+	printf("{\"rsrp\":"); num(rsrp,-160,-30);
+	printf(",\"rsrq\":"); num(nr && rsrq>0 ? -rsrq : rsrq,-45,0);
+	printf(",\"sinr10\":"); num(snr,-350,500);
+	printf(",\"rssi\":"); num(rssi,-150,-10); putchar('}');
+}
+static void cell(const char *type, uint32_t arfcn, uint32_t pci, uint64_t cid, uint32_t tac, int rsrp, int *comma)
+{
+	if (*comma) putchar(',');
+	*comma=1;
+	if (tac>0xffffff) { tac=0; if (cid==0xfffffff || cid==0xffffffff || cid==0xfffffffff) cid=0; }
+	printf("{\"rat\":\"%s\",\"arfcn\":%" PRIu32 ",\"pci\":%" PRIu32 ",\"cell\":\"%" PRIu64 "\",\"tac\":%" PRIu32 ",\"rsrp\":",
+		type,arfcn,pci,cid,tac);
+	num(rsrp,-160,-30); putchar('}');
+}
+static void carrier(int nr, int primary, int band, uint32_t pci, uint64_t arfcn, unsigned bw, unsigned state, int *comma)
+{
+	const char *lte[]={"1.4","3","5","10","15","20"};
+	const char *five[]={"5","10","15","20","25","30","40","50","60","80","90","100","70","200","400"};
+	if (band<1 || band>1024) return;
+	if (*comma) putchar(',');
+	*comma=1;
+	printf("{\"rat\":\"%s\",\"primary\":%s,\"band\":%d,\"arfcn\":%" PRIu64 ",\"pci\":%" PRIu32 ",\"bw\":\"%s\",\"state\":%u}",
+		nr?"NR":"LTE",primary?"true":"false",band,arfcn,pci,nr?(bw<COUNT(five)?five[bw]:""):(bw<COUNT(lte)?lte[bw]:""),state);
+}
+static void ambr_value(const char *value, size_t len)
+{
+	char raw[16]={0};
+	if (len >= sizeof raw) { fputs("null",stdout); return; }
+	memcpy(raw,value,len);
+	char *unit;
+	errno=0;
+	unsigned long long kbps=strtoull(raw,&unit,10);
+	if (errno || raw[0]<'0' || raw[0]>'9' || !kbps || strcmp(unit," Kbps")) fputs("null",stdout);
+	else printf("%llu",kbps);
+}
+static void ambr(void)
+{
+	ql_nw_get_band_info_t b={0};
+	if (ql_nw_get_band_info(&b)!=0) { fputs("null",stdout); return; }
+	fputs("{\"net_dl\":",stdout); ambr_value(b.net_ambr_dl,sizeof b.net_ambr_dl);
+	fputs(",\"net_ul\":",stdout); ambr_value(b.net_ambr_ul,sizeof b.net_ambr_ul);
+	fputs(",\"ims_dl\":",stdout); ambr_value(b.ims_ambr_dl,sizeof b.ims_ambr_dl);
+	fputs(",\"ims_ul\":",stdout); ambr_value(b.ims_ambr_ul,sizeof b.ims_ambr_ul);
+	putchar('}');
+}
+static void overview(int detail)
+{
+	ql_nw_reg_status_info_t reg={0};
+	ql_nw_cell_info_t c={0};
+	ql_nw_signal_strength_info_t s={0};
+	QL_NW_SIGNAL_STRENGTH_LEVEL_E level=0;
+	ql_nw_get_ca_info_resp_t ca={0};
+	int rr=ql_nw_get_data_reg_status(&reg), rs=ql_nw_get_signal_strength(&s,&level);
+	int rc=detail?ql_nw_get_cell_info(&c):-1, ra=detail?ql_nw_get_ca_info(&ca):-1;
+	int comma=0;
+	if (rr && rs && rc && ra) { fail("radio_read",rr); return; }
+
+	printf("{\"ok\":true,\"register\":");
+	if (rr) printf("null");
+	else {
+		printf("{\"state\":%d,\"rat\":\"%s\",\"plmn\":\"",reg.reg_state,rat(reg.radio_tech));
+		digit_str(reg.mcc,3); digit_str(reg.mnc,3);
+		printf("\",\"tac\":%" PRIu32 ",\"cell\":\"%" PRIu64 "\",\"reject\":%d}",reg.tac,reg.cid,reg.reg_state==QL_NW_SERVICE_DENIED ? reg.deny_reason : 0);
+	}
+	printf(",\"lte\":");
+	if (!rs && s.has_lte==1) signal_values(s.lte.rsrp,s.lte.rsrq,s.lte.snr,s.lte.rssi,0); else printf("null");
+	printf(",\"nr\":");
+	if (!rs && s.has_nr5g==1) signal_values(s.nr5g.rsrp,s.nr5g.rsrq,s.nr5g.snr,s.nr5g.rssi,1); else printf("null");
+	if (!detail) { puts("}"); return; }
+	printf(",\"cells\":");
+	if (rc) printf("null");
+	else {
+		putchar('[');
+		if (c.nr_info_valid==1)
+			for (size_t i=0;i<c.nr_info_len && i<COUNT(c.nr_info);i++)
+				cell("NR",c.nr_info[i].nr_arfcn,c.nr_info[i].pci,c.nr_info[i].cid,c.nr_info[i].tac,c.nr_info[i].rsrp,&comma);
+		if (c.lte_info_valid==1)
+			for (size_t i=0;i<c.lte_info_len && i<COUNT(c.lte_info);i++)
+				cell("LTE",c.lte_info[i].earfcn,c.lte_info[i].pci,c.lte_info[i].cid,c.lte_info[i].tac,c.lte_info[i].rsrp,&comma);
+		putchar(']');
+	}
+	printf(",\"carriers\":");
+	if (ra) printf("null");
+	else {
+		putchar('['); comma=0;
+		if (ca.nr_pcc_num) carrier(1,1,ca.nr_pcc_ca_info.pcc_band,ca.nr_pcc_ca_info.pcc_pci,ca.nr_pcc_ca_info.pcc_arfcn,ca.nr_pcc_ca_info.pcc_dl_bandwidth,2,&comma);
+		if (ca.lte_pcc_num) carrier(0,1,ca.lte_pcc_ca_info.pcc_band,ca.lte_pcc_ca_info.pcc_pci,ca.lte_pcc_ca_info.pcc_arfcn,ca.lte_pcc_ca_info.pcc_dl_bandwidth,2,&comma);
+		for (size_t i=0;i<ca.nr_scc_num && i<COUNT(ca.nr_scc_ca_info);i++) {
+			const scc_ca_info_table *a=&ca.nr_scc_ca_info[i];
+			carrier(1,0,a->scc_band,a->scc_pci,a->scc_arfcn,a->scc_dl_bandwidth,a->scc_state,&comma);
+		}
+		for (size_t i=0;i<ca.lte_scc_num && i<COUNT(ca.lte_scc_ca_info);i++) {
+			const scc_ca_info_table *a=&ca.lte_scc_ca_info[i];
+			carrier(0,0,a->scc_band,a->scc_pci,a->scc_arfcn,a->scc_dl_bandwidth,a->scc_state,&comma);
+		}
+		putchar(']');
+	}
+	fputs(",\"ambr\":",stdout);
+	if (!rr && (reg.reg_state==QL_NW_SERVICE_FULL || reg.reg_state==QL_NW_SERVICE_ROAMING ||
+	    reg.reg_state==QL_NW_SERVICE_HOME_CSFB_NOT_PREF || reg.reg_state==QL_NW_SERVICE_ROAMING_CSFB_NOT_PREF))
+		ambr();
+	else fputs("null",stdout);
+	printf("}\n");
+}
+static void bands(const uint32_t *mask, size_t count)
+{
+	int comma=0;
+	putchar('[');
+	for (size_t i=0;i<count*32;i++)
+		if (mask[i/32] & (UINT32_C(1) << (i%32))) {
+			printf("%s%zu",comma?",":"",i+1);
+			comma=1;
+		}
+	putchar(']');
+}
+static void band_state(int option)
+{
+	ql_nw_get_band_mode_info_t info={.get_band_option=option};
+	if (ql_nw_get_band_mode(&info)!=0) { printf("null"); return; }
+	printf("{\"lte\":");
+	bands(info.lte_band_class,COUNT(info.lte_band_class));
+	printf(",\"nr\":");
+	bands(info.nr_band_class,COUNT(info.nr_band_class));
+	putchar('}');
+}
+static void locks(void)
+{
+	ql_nw_get_cell_arfcn_lock_resp_t info={0};
+	int rc=ql_nw_get_cell_arfcn_lock(&info);
+	printf("{\"ok\":true,\"cell\":");
+	if (rc) printf("null");
+	else printf("{\"opt\":%u,\"rat\":\"%s\",\"arfcn\":%" PRIu32 ",\"pci\":%" PRIu32 ",\"mode\":%u}",
+		info.opt,info.act==11?"NR":info.act==7?"LTE":info.act==2?"UMTS":"",info.arfcn,info.pci,info.lock_mode);
+	printf(",\"current\":"); band_state(0);
+	printf(",\"supported\":"); band_state(1);
+	printf("}\n");
+}
+static int uint_arg(const char *s, unsigned long max, uint32_t *out)
+{
+	if (!s || !*s || strspn(s,"0123456789")!=strlen(s)) return 0;
+	errno=0;
+	unsigned long n=strtoul(s,0,10);
+	if (errno || n>max) return 0;
+	*out=(uint32_t)n; return 1;
+}
+static int select_bands(uint32_t *requested, const uint32_t *support, size_t count, const char *csv)
+{
+	if (!strcmp(csv,"auto")) {
+		memcpy(requested,support,count*sizeof(*support));
+	} else {
+		const char *first=csv;
+		while (*first) {
+			size_t len=strspn(first,"0123456789");
+			if (!len || len>4 || (first[len] && first[len]!=',')) return 0;
+			char field[5]={0};
+			memcpy(field,first,len);
+			uint32_t n;
+			if (!uint_arg(field,count*32,&n) || !n) return 0;
+			uint32_t flag=UINT32_C(1) << ((n-1)%32);
+			if (!(support[(n-1)/32]&flag)) return 0;
+			requested[(n-1)/32] |= flag;
+			first += len;
+			if (*first==',' && !*++first) return 0;
+		}
+	}
+	for (size_t i=0;i<count;i++) if (requested[i]) return 1;
+	return 0;
+}
+static void band_set(const char *rat_arg, const char *list)
+{
+	int nr=!strcmp(rat_arg,"NR");
+	if (!nr && strcmp(rat_arg,"LTE")) { fail("input",0); return; }
+	ql_nw_get_band_mode_info_t avail={.get_band_option=1}, actual={0};
+	ql_nw_set_band_mode_info_t desired={.set_band_option=nr?2:1};
+	int rc=ql_nw_get_band_mode(&avail);
+	if (rc) { fail("band_read",rc); return; }
+	uint32_t *want=nr?desired.nr_band_class:desired.lte_band_class;
+	size_t count=nr?COUNT(desired.nr_band_class):COUNT(desired.lte_band_class);
+	if (!select_bands(want,nr?avail.nr_band_class:avail.lte_band_class,count,list)) { fail("input",0); return; }
+	if ((rc=ql_nw_get_band_mode(&actual))!=0) { fail("band_read",rc); return; }
+	size_t len=count*sizeof(*want);
+	if (memcmp(want,nr?actual.nr_band_class:actual.lte_band_class,len)) {
+		if ((rc=ql_nw_set_band_mode(&desired))!=0) { fail("band_write",rc); return; }
+		if ((rc=ql_nw_get_band_mode(&actual))!=0 ||
+		    memcmp(want,nr?actual.nr_band_class:actual.lte_band_class,len)) {
+			fail("readback",rc); return;
+		}
+	}
+	puts("{\"ok\":true}");
+}
+static void cell_set(int argc,char **argv)
+{
+	ql_nw_set_cell_arfcn_lock_req_t desired={0};
+	ql_nw_get_cell_arfcn_lock_resp_t actual={0};
+	int clear=argc==3 && !strcmp(argv[2],"clear");
+	if (!clear) {
+		if (argc!=5 || (strcmp(argv[2],"LTE") && strcmp(argv[2],"NR"))) { fail("input",0); return; }
+		int nr=!strcmp(argv[2],"NR");
+		desired.act=nr?11:7; desired.opt=1; desired.lock_mode=3;
+		if (!uint_arg(argv[3],nr?3279165:262143,&desired.arfcn) ||
+		    !uint_arg(argv[4],nr?1007:503,&desired.pci)) { fail("input",0); return; }
+	}
+	int rc=ql_nw_get_cell_arfcn_lock(&actual);
+	if (rc) { fail("cell_read",rc); return; }
+	if ((clear && actual.opt==0) || (!clear && desired.opt==actual.opt && desired.act==actual.act &&
+	    desired.arfcn==actual.arfcn && desired.pci==actual.pci && desired.lock_mode==actual.lock_mode)) {
+		puts("{\"ok\":true}"); return;
+	}
+	if ((rc=ql_nw_set_cell_arfcn_lock(&desired))!=0) { fail("cell_write",rc); return; }
+	if ((rc=ql_nw_get_cell_arfcn_lock(&actual))!=0 || (clear ? actual.opt!=0 :
+	    (actual.opt!=desired.opt || actual.act!=desired.act || actual.arfcn!=desired.arfcn ||
+	     actual.pci!=desired.pci || actual.lock_mode!=desired.lock_mode))) {
+		fail("readback",rc); return;
+	}
+	puts("{\"ok\":true}");
+}
+/* The vendor exposes set/cancel for the whitelist, but no whitelist getter. */
+static void cell_list(char *spec)
+{
+	ql_nw_set_cell_arfcn_list_lock_req_t request={0};
+	if (strcmp(spec,"clear")) {
+		if (strlen(spec)>2048) { fail("input",0); return; }
+		request.opt=1;
+		char *row;
+		while ((row=strsep(&spec,","))) {
+			char *system=strsep(&row,":");
+			char *freq=strsep(&row,":");
+			char *phys=strsep(&row,":");
+			int nr=!strcmp(system,"NR");
+			uint32_t arfcn,pci;
+			if ((!nr && strcmp(system,"LTE")) || row ||
+			    !uint_arg(freq,nr?3279165:262143,&arfcn) || !uint_arg(phys,nr?1007:503,&pci)) {
+				fail("input",0); return;
+			}
+			if (nr) {
+				if (request.nr_cell_count>=COUNT(request.nr_cell_list)) { fail("input",0); return; }
+				for (unsigned i=0;i<request.nr_cell_count;i++)
+					if (request.nr_cell_list[i].nr_arfcn==arfcn && request.nr_cell_list[i].pci==pci) {
+						fail("cell_duplicate",0); return;
+					}
+				request.nr_cell_list[request.nr_cell_count++]=(nr_cell_lock_info){.nr_arfcn=arfcn,.pci=pci,.freq_band=0};
+			} else {
+				if (request.lte_cell_count>=COUNT(request.lte_cell_list)) { fail("input",0); return; }
+				for (unsigned i=0;i<request.lte_cell_count;i++)
+					if (request.lte_cell_list[i].earfcn==arfcn && request.lte_cell_list[i].pci==pci) {
+						fail("cell_duplicate",0); return;
+					}
+				request.lte_cell_list[request.lte_cell_count++]=(lte_cell_lock_info){.earfcn=arfcn,.pci=pci};
+			}
+		}
+		if (request.lte_cell_count+request.nr_cell_count<2) { fail("cell_min",0); return; }
+		ql_nw_get_cell_arfcn_lock_resp_t single={0};
+		int rc=ql_nw_get_cell_arfcn_lock(&single);
+		if (rc) { fail("cell_read",rc); return; }
+		if (single.opt) { fail("single_lock",0); return; }
+	}
+	const int rc=ql_nw_set_cell_arfcn_list_lock(&request);
+	if (rc) fail("cell_list_write",rc); else puts("{\"ok\":true,\"verified\":false}");
+}
+static void inbox(void)
+{
+	ql_sms_store_message_number_t storage={0};
+	ql_sms_read_pdu_req_t req={.flag=QL_SMS_FLAG_ALL};
+	ql_sms_read_pdu_resp_t res={0};
+	int rs=ql_sms_get_store_message_number(&storage), rc=ql_sms_read_pdu(&req,&res);
+	if (rc && (rs || storage.used_message)) { fail("sms_list",rc); return; }
+
+	printf("{\"ok\":true,\"used\":");
+	if (rs) printf("null"); else printf("%u",storage.used_message);
+	printf(",\"capacity\":");
+	if (rs) printf("null"); else printf("%u",storage.max_message);
+	printf(",\"limited\":%s,\"indexes\":[",res.message_count>COUNT(res.all_message_index) ||
+		(!rs && storage.used_message>res.message_count) ? "true":"false");
+	for (size_t i=0;!rc && i<res.message_count && i<COUNT(res.all_message_index);i++)
+		printf("%s%u",i?",":"",res.all_message_index[i]);
+	puts("]}");
+}
+static void read_sms(const char *id)
+{
+	uint32_t n;
+	if (!uint_arg(id,UINT16_MAX,&n)) { fail("input",0); return; }
+	ql_sms_read_pdu_req_t req={.flag=QL_SMS_FLAG_INDEX,.message_index=n};
+	ql_sms_read_pdu_resp_t res={0};
+	int rc=ql_sms_read_pdu(&req,&res);
+	if (rc || !res.content_size) { fail("sms_read",rc); return; }
+	printf("{\"ok\":true,\"pdu\":\"");
+	for (size_t i=0;i<res.content_size;i++) printf("%02X",(unsigned char)res.content[i]);
+	puts("\"}");
+}
+static void send_sms(void)
+{
+	char to[18], body[212];
+	/* Phone is on its own line; the remaining input is UTF-8 message text. */
+	if (!fgets(to,sizeof to,stdin)) { fail("input",0); return; }
+	char *newline=strchr(to,'\n');
+	if (!newline) { fail("input",0); return; }
+	*newline=0;
+	size_t n=fread(body,1,sizeof body-1,stdin);
+	if (ferror(stdin) || fgetc(stdin)!=EOF || memchr(body,0,n)) { fail("input",0); return; }
+	body[n]=0;
+	ql_sms_pdu_t pdu={.format=QL_SMS_PDU_FORMAT_GW_PP};
+	pdu.content_size=sms_submit((unsigned char *)pdu.content,sizeof pdu.content,to,body);
+	if (!pdu.content_size) { fail("input",0); return; }
+	int rc=ql_sms_send_pdu(&pdu);
+	if (rc) fail("sms_send",rc); else puts("{\"ok\":true}");
+}
+int main(int argc,char **argv)
+{
+	if (argc<2) { fail("input",0); return 0; }
+	const char *action=argv[1];
+	int fd=open("/var/lock/dlink-cellular.lock",O_CREAT|O_CLOEXEC|O_NOFOLLOW|O_WRONLY,0600);
+	if (fd<0 || flock(fd,LOCK_EX|LOCK_NB)) { fail("busy",0); return 0; }
+	int sms=!strncmp(action,"sms_",4);
+	int rc=sms ? ql_sms_init(SMS_IPC_MODE_DEFAULT) : ql_nw_init(NW_IPC_MODE_DEFAULT);
+	if (rc) { fail("ril_init",rc); return 0; }
+	if (!strcmp(action,"overview")) overview(1);
+	else if (!strcmp(action,"summary")) overview(0);
+	else if (!strcmp(action,"locks")) locks();
+	else if (!strcmp(action,"band_set") && argc==4) band_set(argv[2],argv[3]);
+	else if (!strcmp(action,"cell_set")) cell_set(argc,argv);
+	else if (!strcmp(action,"cell_list") && argc==3) cell_list(argv[2]);
+	else if (!strcmp(action,"sms_list") && argc==2) inbox();
+	else if (!strcmp(action,"sms_read") && argc==3) read_sms(argv[2]);
+	else if (!strcmp(action,"sms_send") && argc==2) send_sms();
+	else fail("input",0);
+	if (sms) ql_sms_release(); else ql_nw_release();
+	return 0;
+}

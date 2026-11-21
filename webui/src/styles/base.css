@@ -1,0 +1,144 @@
+/* 基础：重置、全局排版、焦点与选区、Semi 组件统一修饰、减弱动效。数值一律取自 tokens.css。 */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+html {
+  background: var(--color-bg);
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+  background: var(--color-bg);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body,
+button,
+input,
+textarea,
+select,
+.semi-typography {
+  font-family: var(--font-family-sans);
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+code,
+pre,
+.mono {
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: var(--color-accent-tint-strong);
+}
+
+:focus-visible:not(input):not(textarea):not(select) {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+}
+
+body[theme-mode="dark"] .login-card.semi-card {
+  border: 1px solid var(--color-border);
+}
+
+.semi-button {
+  border-radius: var(--radius-md);
+  font-weight: var(--font-weight-semibold);
+}
+
+.semi-button-primary.semi-button-solid:not(.semi-button-disabled) {
+  color: var(--color-text-on-solid);
+  background: var(--color-accent);
+}
+
+.semi-button-primary.semi-button-solid:not(.semi-button-disabled):hover {
+  background: var(--color-accent-hover);
+}
+
+.semi-button-primary.semi-button-solid:not(.semi-button-disabled):active {
+  background: var(--color-accent-active);
+}
+
+.semi-button-danger.semi-button-solid:not(.semi-button-disabled) {
+  color: var(--color-text-on-solid);
+  background: var(--color-danger-solid);
+}
+
+.semi-button-danger.semi-button-solid:not(.semi-button-disabled):hover {
+  background: var(--color-danger-solid-hover);
+}
+
+.semi-input-wrapper,
+.semi-input-textarea-wrapper,
+.semi-select,
+.semi-input-number .semi-input-wrapper {
+  border-radius: var(--radius-md);
+}
+
+.semi-tag {
+  border-radius: var(--radius-sm);
+  font-weight: var(--font-weight-semibold);
+}
+
+.semi-banner {
+  border-radius: var(--radius-lg);
+}
+
+.semi-modal-content {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-raised);
+}
+
+.semi-popover-content,
+.semi-select-option-list-wrapper,
+.semi-tooltip-wrapper {
+  border-radius: var(--radius-md);
+}
+
+@media (max-width: 767px) {
+  .semi-modal {
+    width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important; /* token-exempt: 系统减弱动效时近似关闭动画 */
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important; /* token-exempt: 同上 */
+  }
+}

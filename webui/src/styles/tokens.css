@@ -1,0 +1,230 @@
+/* =====================================================================
+   RG620T 控制台 · Design Tokens（唯一数值来源）
+   - 业务样式只能通过 var(--token) 取值；裸色值 / 裸字号 / 裸间距由
+     `npm run lint:tokens` 拦截。规则与用法见 DESIGN.md。
+   - 只有语义层：按「用途」命名，不按「长相」命名。新增 token 前先确认
+     现有语义 token 无法复用，并同步更新 DESIGN.md。
+   - 对比度约定：文字色对其所在表面 ≥ 4.5:1；实底按钮白字 ≥ 4.5:1。
+   ===================================================================== */
+
+:root {
+  /* ---------- 颜色 · 表面与边框 ---------- */
+  --color-bg: #f4f6fa;
+  --color-surface: #ffffff;
+  --color-surface-subtle: #f8fafc;
+  --color-surface-muted: #eef2f7;
+  --color-border: #e4e8ef;
+  --color-border-strong: #cfd6e0;
+  --color-fill-hover: rgba(100, 116, 139, 0.07);
+  --color-overlay: rgba(15, 23, 42, 0.45);
+
+  /* ---------- 颜色 · 文字 ---------- */
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #475569;
+  --color-text-tertiary: #5b6b82;
+  --color-text-on-solid: #ffffff;
+
+  /* ---------- 颜色 · 品牌强调（实底白字 5.17:1） ---------- */
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --color-accent-active: #1e40af;
+  --color-accent-text: #1d4ed8;
+  --color-accent-tint: rgba(37, 99, 235, 0.07);
+  --color-accent-tint-strong: rgba(37, 99, 235, 0.12);
+  --color-accent-border: #93c5fd;
+  --color-accent-border-soft: #bfdbfe;
+  --color-focus-ring: #3b82f6;
+
+  /* ---------- 颜色 · 状态（文字用，对白底 ≥ 4.5:1） ---------- */
+  --color-success: #15803d;
+  --color-warning: #b45309;
+  --color-danger: #dc2626;
+  --color-info: #2563eb;
+  /* 危险实底按钮：两种主题都要白字可读，所以不跟随暗色提亮 */
+  --color-danger-solid: #dc2626;
+  --color-danger-solid-hover: #b91c1c;
+
+  /* ---------- 颜色 · 数据序列 ---------- */
+  --color-series-down: #2563eb;
+  --color-series-up: #7c3aed;
+  --color-rat-nr: #2563eb;
+  --color-rat-lte: #4f46e5;
+
+  /* ---------- 字体 ---------- */
+  --font-family-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
+  --font-family-mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  /* 字号阶梯：标签 xs → 次要 sm → 正文 md → 卡片标题 lg → 页面标题 xl → 数值 2xl~5xl */
+  --font-size-2xs: 11px;
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 18px;
+  --font-size-2xl: 20px;
+  --font-size-3xl: 24px;
+  --font-size-4xl: 28px;
+  --font-size-5xl: 32px;
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.15;
+  --line-height-snug: 1.35;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.65;
+
+  --letter-spacing-tight: -0.02em;
+  --letter-spacing-snug: -0.01em;
+  --letter-spacing-wide: 0.04em;
+  --letter-spacing-wider: 0.12em;
+
+  /* ---------- 间距（4px 基准） ---------- */
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-2-5: 10px;
+  --space-3: 12px;
+  --space-3-5: 14px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* ---------- 圆角 ---------- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 16px;
+  --radius-full: 999px;
+
+  /* ---------- 阴影（只声明一种高度：卡片用边框 + card 阴影，浮层用 raised） ---------- */
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-control: 0 1px 2px rgba(15, 23, 42, 0.1);
+  --shadow-raised: 0 12px 32px -8px rgba(15, 23, 42, 0.18), 0 2px 6px rgba(15, 23, 42, 0.06);
+  --shadow-drawer: 12px 0 32px rgba(2, 6, 23, 0.28);
+  /* 状态点外圈光晕宽度：box-shadow: 0 0 0 var(--halo-sm) color-mix(...) */
+  --halo-sm: 3px;
+  --halo-md: 4px;
+
+  /* ---------- 动效 ---------- */
+  --duration-instant: 80ms;
+  --duration-fast: 150ms;
+  --duration-base: 220ms;
+  --duration-slow: 400ms;
+  /* 循环动画：环境呼吸（实时标记）与告警闪烁（来电） */
+  --duration-pulse: 2.4s;
+  --duration-alert: 1s;
+  --ease-standard: ease;
+  --ease-in-out: ease-in-out;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* ---------- 层级 ---------- */
+  --z-header: 30;
+  --z-scrim: 35;
+  --z-sider: 40;
+  --z-floating: 50;
+
+  /* ---------- 控件高度 ---------- */
+  --control-h-xs: 26px;
+  --control-h-sm: 30px;
+  --control-h-md: 32px;
+
+  /* ---------- 布局 ---------- */
+  --layout-header-h: 60px;
+  --layout-sider-w: 240px;
+  --layout-content-max: 1440px;
+  --layout-content-pad: var(--space-6);
+  --layout-card-pad: var(--space-5);
+  --layout-gap: var(--space-4);
+}
+
+/* 窄屏只收紧布局类 token，组件内部间距保持不变 */
+@media (max-width: 767px) {
+  :root {
+    --layout-header-h: 56px;
+    --layout-sider-w: 256px;
+    --layout-content-pad: var(--space-3);
+    --layout-card-pad: var(--space-4);
+    --layout-gap: var(--space-3);
+  }
+}
+
+/* ---------- 暗色主题：只覆盖颜色与阴影 ---------- */
+body[theme-mode="dark"] {
+  --color-bg: #0b0f17;
+  --color-surface: #121826;
+  --color-surface-subtle: #161d2c;
+  --color-surface-muted: #1e2738;
+  --color-border: rgba(148, 163, 184, 0.14);
+  --color-border-strong: rgba(148, 163, 184, 0.28);
+  --color-fill-hover: rgba(148, 163, 184, 0.08);
+  --color-overlay: rgba(2, 6, 23, 0.7);
+
+  --color-text-primary: #e7ecf3;
+  --color-text-secondary: #b4bfcf;
+  --color-text-tertiary: #8a97ab;
+
+  --color-accent: #2563eb;
+  --color-accent-hover: #3b82f6;
+  --color-accent-active: #1d4ed8;
+  --color-accent-text: #93c5fd;
+  --color-accent-tint: rgba(59, 130, 246, 0.12);
+  --color-accent-tint-strong: rgba(59, 130, 246, 0.2);
+  --color-accent-border: rgba(96, 165, 250, 0.48);
+  --color-accent-border-soft: rgba(96, 165, 250, 0.32);
+  --color-focus-ring: #60a5fa;
+
+  --color-success: #3ecf8e;
+  --color-warning: #fbbf24;
+  --color-danger: #f87171;
+  --color-info: #60a5fa;
+
+  --color-series-down: #60a5fa;
+  --color-series-up: #a78bfa;
+  --color-rat-nr: #60a5fa;
+  --color-rat-lte: #818cf8;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-control: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-raised: 0 16px 40px -8px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(148, 163, 184, 0.12);
+}
+
+/* ---------- Semi Design 桥接：让 Semi 组件消费同一套 token ---------- */
+body {
+  --semi-color-primary: var(--color-accent);
+  --semi-color-primary-hover: var(--color-accent-hover);
+  --semi-color-primary-active: var(--color-accent-active);
+  --semi-color-primary-disabled: var(--color-accent-border-soft);
+  --semi-color-primary-light-default: var(--color-accent-tint);
+  --semi-color-primary-light-hover: var(--color-accent-tint-strong);
+  --semi-color-primary-light-active: var(--color-accent-tint-strong);
+  --semi-color-focus-border: var(--color-focus-ring);
+  --semi-color-link: var(--color-accent-text);
+  --semi-color-link-hover: var(--color-accent);
+  --semi-color-danger: var(--color-danger);
+  --semi-color-success: var(--color-success);
+  --semi-color-warning: var(--color-warning);
+
+  --semi-color-bg-0: var(--color-bg);
+  --semi-color-bg-1: var(--color-surface);
+  --semi-color-bg-2: var(--color-surface);
+  --semi-color-bg-3: var(--color-surface);
+  --semi-color-bg-4: var(--color-surface-subtle);
+  --semi-color-border: var(--color-border);
+  --semi-color-fill-0: var(--color-fill-hover);
+  --semi-color-text-0: var(--color-text-primary);
+  --semi-color-text-1: var(--color-text-primary);
+  --semi-color-text-2: var(--color-text-secondary);
+  --semi-color-text-3: var(--color-text-tertiary);
+  --semi-color-nav-bg: var(--color-surface);
+  --semi-color-overlay-bg: var(--color-overlay);
+  --semi-shadow-elevated: var(--shadow-raised);
+  --semi-border-radius-medium: var(--radius-md);
+}

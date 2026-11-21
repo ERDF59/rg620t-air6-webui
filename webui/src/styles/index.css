@@ -1,0 +1,12 @@
+/* 样式入口：顺序即层叠优先级（token → 基础 → 框架 → 共享组件 → 页面 → 工具类）。
+   新页面样式放 pages/<页面>.css 并在 utilities.css 之前追加 @import；不要再新增「全局大杂烩」文件。 */
+@import './tokens.css';
+@import './base.css';
+@import './layout.css';
+@import './components.css';
+@import './pages/network.css';
+@import './pages/settings.css';
+@import './pages/voice.css';
+@import './pages/sms.css';
+@import './pages/login.css';
+@import './utilities.css';

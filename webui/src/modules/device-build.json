@@ -1,0 +1,5 @@
+{
+  "firmware": "MOLY.NR16.R2.MD800.MP.V86.P56",
+  "systemSlot": "A",
+  "source": "AT+CGMR; /proc/cmdline"
+}

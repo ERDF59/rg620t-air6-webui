@@ -1,0 +1,71 @@
+#!/bin/sh
+
+error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
+ok() { echo '{"ok":true}'; }
+running() {
+	ubus -t 2 call service list '{"name":"dlink-cellular-trace"}' |
+		jsonfilter -e '@["dlink-cellular-trace"].instances.capture.running'
+}
+case "$1" in
+	checks)
+		exec 9>/var/lock/dlink-cellular.lock || { error busy; exit 0; }
+		flock -w 1 9 || { error busy; exit 0; }
+		sim="$(timeout 3 mipc_wan_cli --at_cmd 'AT+CPIN?' 2>/dev/null |
+			tr -d '\r' | sed -n 's/^+CPIN:[[:space:]]*//p' | head -1)"
+		case "$sim" in
+			READY) sim=ready;; 'SIM PIN') sim=pin;; 'SIM PUK') sim=puk;; *) sim=unknown;;
+		esac
+		radio="$(timeout 3 mipc_wan_cli --nw_radio_state_get 2>/dev/null)"
+		case "$radio" in
+			*MIPC_NW_RADIO_STATE_ON) radio=true;; *MIPC_NW_RADIO_STATE_OFF) radio=false;; *) radio=null;;
+		esac
+		ims="$(timeout 3 mipc_wan_cli --ims_get_status 2>/dev/null | tr -d '\r')"
+		case "$ims" in
+			Registered) ims=true;; 'Not Registered'|'Not registered'|Unregistered) ims=false;; *) ims=null;;
+		esac
+		cause="$(timeout 3 mipc_wan_cli --at_cmd AT+CEER 2>/dev/null |
+			sed -n 's/^+CEER:[[:space:]]*\(0\|[1-9][0-9]*\),.*/\1/p' | head -1)"
+		case "$cause" in ''|*[!0-9]*) cause=null;; esac
+		ratmode="$(timeout 3 mipc_wan_cli --nw_get_rat 2>/dev/null |
+			tr -d '\r' | awk '/^Current: / {v=substr($0,10); if (length(v)<=24 && v ~ /^[0-9a-zA-Z \/+-]+$/) print v; exit}')"
+		printf '{"ok":true,"sim":"%s","radio":%s,"ims":%s,"ceer":%s,"ratmode":"%s"}\n' "$sim" "$radio" "$ims" "$cause" "$ratmode"
+		;;
+	status)
+		run="$(running)"
+		[ "$run" = true ] || run=false
+		record="$(cat /tmp/dlink-cellular-trace/capture.json 2>/dev/null)"
+		printf '{"ok":true,"running":%s,"capture":%s}\n' "$run" "${record:-null}"
+		;;
+	start|stop)
+		exec 9>/var/lock/dlink-cellular-trace-admin.lock || { error busy; exit 0; }
+		flock -w 1 9 || { error busy; exit 0; }
+		if [ "$1" = start ]; then
+			case "$2" in 30|120|300) ;; *) error input; exit 0;; esac
+			[ "$(running)" != true ] || { error capture_active; exit 0; }
+			/etc/init.d/dlink-cellular-trace start "$2" >/dev/null 2>&1 || { error capture_start; exit 0; }
+		elif [ "$(running)" = true ]; then
+			/etc/init.d/dlink-cellular-trace stop >/dev/null 2>&1 || { error capture_stop; exit 0; }
+		fi
+		ok
+		;;
+	redial)
+		exec 9>/var/lock/dlink-cellular-redial.lock || { error busy; exit 0; }
+		flock -n 9 || { error busy; exit 0; }
+		device=network.interface.wan
+		wan="$(ubus -t 2 call "$device" status)" || { error wan_missing; exit 0; }
+		[ "$(printf '%s\n' "$wan" | jsonfilter -e '@.proto')" = ql_datacall ] ||
+			{ error wan_missing; exit 0; }
+		[ "$(printf '%s\n' "$wan" | jsonfilter -e '@.pending')" != true ] ||
+			{ error wan_pending; exit 0; }
+		ubus -t 3 call "$device" down >/dev/null 2>&1 || { error wan_down; exit 0; }
+		for i in 1 2 3 4 5; do
+			wan="$(ubus -t 1 call "$device" status 2>/dev/null)" &&
+				[ "$(printf '%s\n' "$wan" | jsonfilter -e '@.up')" = false ] && break
+			sleep 1
+		done
+		# Always bring the same WAN back up after accepting its down request.
+		ubus -t 3 call "$device" up >/dev/null 2>&1 || { error wan_up; exit 0; }
+		ok
+		;;
+	*) error input;;
+esac
