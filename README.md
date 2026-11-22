@@ -1,6 +1,24 @@
-# D-Link DWR-BE7200G · RG620T 管理控制台源码
+# RG620T 5G CPE 管理控制台
 
-这是 D-Link 设备 `/rg620/` 控制台及其配套后端的源码，包含网络监测、工程工具和短信管理。要改网页，从 `webui/src/pages/device/` 开始；要查某个按钮实际调用了什么，从 `backend/cellular/root/usr/libexec/rpcd/dlink-cellular` 开始。此包供阅读和构建，不是固件或安装包。
+面向采用移远 RG620T 模组的 5G CPE，提供蜂窝网络监测、频段与小区锁定、短信、语音和 AT 调试。网页通过 OpenWrt 的 ubus/rpcd 读取设备状态；可用功能取决于目标固件提供的基带、无线和音频接口。
+
+## 界面预览
+
+点击截图可查看原图。短信中心使用本地模拟收件箱，其余为实机截图。
+
+| 网络状态 · 信号质量与吞吐 | 锁频锁小区 · 配置与实际驻留 |
+| --- | --- |
+| [![网络状态页的驻留网络、信号质量与吞吐趋势](docs/screenshots/network.png)](docs/screenshots/network.png) | [![锁频锁小区页的当前配置与频段选择](docs/screenshots/cell-lock.png)](docs/screenshots/cell-lock.png) |
+| **语音通话 · IMS 与拨号键盘** | **短信中心 · 删除确认（模拟数据）** |
+| [![语音通话页的 IMS 注册、通话控制与拨号键盘](docs/screenshots/voice.png)](docs/screenshots/voice.png) | [![模拟短信收件箱中的删除确认框](docs/screenshots/sms-demo.png)](docs/screenshots/sms-demo.png) |
+| **设备信息 · 系统与无线射频** | **工程工具 · 蜂窝与 Wi-Fi 策略** |
+| [![设备信息页的系统负载、固件与无线射频](docs/screenshots/device.png)](docs/screenshots/device.png) | [![工程工具页的 SA、NSA、自动拨号及主 Wi-Fi 设置](docs/screenshots/engineering.png)](docs/screenshots/engineering.png) |
+
+## 设备适配与源码入口
+
+仓库中的后端已在 **D-Link DWR-BE7200G** 上验证。移植到其他 RG620T 机型时，先核对[板型检查](backend/cellular/root/usr/libexec/rpcd/dlink-cellular)、无线接口映射和厂商运行库；使用网页通话还需适配音频路由。`dlink-cellular` 是现有 ubus 接口名。
+
+页面在 `webui/src/pages/device/`，对应的 RPC 和原生助手在 `backend/cellular/`。本仓库提供源码，不是可直接刷入设备的固件。
 
 | 组件 | 对应版本 | 入口 |
 |---|---|---|
@@ -20,7 +38,7 @@ npm run lint:tokens
 npm run build -- --mode dlink
 ```
 
-`dist/` 的内容对应设备的 `/www/rg620/`；浏览器入口是 `https://<设备地址>/rg620/`。D-Link 页面使用同源 `/ubus` 和 rpcd 登录，不使用旧版 AT WebSocket 服务。只启动本地 Vite 不会连接到路由器的登录服务。源码保留了旧版前端的未路由页面和演示数据；**不要用 `npm run deploy` 或 `sync:www` 部署 D-Link**，这两个旧命令针对另一机型的 `/5700/` 目录。
+`dist/` 的内容对应设备的 `/www/rg620/`；浏览器入口是 `https://<设备地址>/rg620/`。控制台使用同源 `/ubus` 和 rpcd 登录，不使用旧版 AT WebSocket 服务。只启动本地 Vite 不会连接到路由器的登录服务。源码保留了旧版前端的未路由页面和演示数据；**不要用 `npm run deploy` 或 `sync:www` 部署本控制台**，这两个旧命令针对另一机型的 `/5700/` 目录。
 
 ## 从网页跟到基带
 
@@ -52,7 +70,7 @@ npm run build -- --mode dlink
 
 ## 构建设备后端
 
-原生部分需要匹配的 MT6990/T830 AArch64-musl 工具链、Quectel 开发头和运行库、MediaTek 语音头及 D-Link 语音运行环境。通用 OpenWrt SDK 或仅有这份 ZIP 不足以构建全部 C 程序。浏览代码、构建前端和 Go 网关不需要这些厂商文件。
+原生部分需要匹配的 MT6990/T830 AArch64-musl 工具链、Quectel 开发头和运行库、MediaTek 语音头及对应机型的语音运行环境。通用 OpenWrt SDK 或仅有本仓库源码 不足以构建全部 C 程序。浏览代码、构建前端和 Go 网关不需要这些厂商文件。
 
 在 Linux 编译机配置以下环境变量，均为已有 SDK 的绝对路径：
 
