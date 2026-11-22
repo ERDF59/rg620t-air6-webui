@@ -3,7 +3,7 @@
  * 后端 dlink-cell.c 的 cell() 统一输出这些字段：
  * - sinr10 一律为 0.1 dB（NR 的 dB 值已由后端乘 10），/10 即为 dB
  * - rsrq 为 dB，负数越大越好
- * - ta（timing advance）只有服务小区有值，邻区通常为无效哨兵，故可选
+ * - ta（timing advance）是主小区的原始定时提前量，单位未标定；未上报时省略
  */
 export type Rat = 'NR' | 'LTE';
 

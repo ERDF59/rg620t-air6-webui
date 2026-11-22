@@ -42,7 +42,7 @@ static void signal_values(int rsrp, int rsrq, int snr, int rssi, int nr)
 	printf(",\"sinr10\":"); num(snr,-350,500);
 	printf(",\"rssi\":"); num(rssi,-150,-10); putchar('}');
 }
-static void cell(const char *type, uint32_t arfcn, uint32_t pci, uint64_t cid, uint32_t tac, int rsrp, int rsrq, int sinr, int *comma)
+static void cell(const char *type, uint32_t arfcn, uint32_t pci, uint64_t cid, uint32_t tac, int rsrp, int rsrq, int sinr, uint32_t ta, int *comma)
 {
 	if (*comma) putchar(',');
 	*comma=1;
@@ -58,6 +58,8 @@ static void cell(const char *type, uint32_t arfcn, uint32_t pci, uint64_t cid, u
 		if (sinr < -35 || sinr > 50) fputs("null",stdout);
 		else printf("%d",sinr * 10);
 	} else num(sinr,-200,300);
+	/* Only the SDK primary entry supplies serving TA. The SDK specifies no distance unit. */
+	if (ta < INT32_MAX) printf(",\"ta\":%" PRIu32,ta);
 	putchar('}');
 }
 static int registered(int state)
@@ -127,6 +129,10 @@ static void overview(int detail)
 	QL_NW_SIGNAL_STRENGTH_LEVEL_E level=0;
 	ql_nw_get_ca_info_resp_t ca={0};
 	int rr=ql_nw_get_data_reg_status(&reg), rs=ql_nw_get_signal_strength(&s,&level);
+	if (detail) {
+		for (size_t i=0;i<COUNT(c.nr_info);i++) c.nr_info[i].ta=UINT32_MAX;
+		for (size_t i=0;i<COUNT(c.lte_info);i++) c.lte_info[i].ta=UINT32_MAX;
+	}
 	int rc=detail?ql_nw_get_cell_info(&c):-1, ra=detail?ql_nw_get_ca_info(&ca):-1;
 	int comma=0;
 	if (rr && rs && rc && ra) { fail("radio_read",rr); return; }
@@ -150,11 +156,11 @@ static void overview(int detail)
 		if (c.nr_info_valid==1)
 			for (size_t i=0;i<c.nr_info_len && i<COUNT(c.nr_info);i++)
 				cell("NR",c.nr_info[i].nr_arfcn,c.nr_info[i].pci,c.nr_info[i].cid,c.nr_info[i].tac,c.nr_info[i].rsrp,
-				     c.nr_info[i].rsrq,c.nr_info[i].sinr,&comma);
+				     c.nr_info[i].rsrq,c.nr_info[i].sinr,i==0 ? c.nr_info[i].ta : UINT32_MAX,&comma);
 		if (c.lte_info_valid==1)
 			for (size_t i=0;i<c.lte_info_len && i<COUNT(c.lte_info);i++)
 				cell("LTE",c.lte_info[i].earfcn,c.lte_info[i].pci,c.lte_info[i].cid,c.lte_info[i].tac,c.lte_info[i].rsrp,
-				     c.lte_info[i].rsrq,c.lte_info[i].sinr,&comma);
+				     c.lte_info[i].rsrq,c.lte_info[i].sinr,i==0 ? c.lte_info[i].ta : UINT32_MAX,&comma);
 		putchar(']');
 	}
 	printf(",\"carriers\":");

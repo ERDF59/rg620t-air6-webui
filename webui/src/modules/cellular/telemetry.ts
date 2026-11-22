@@ -31,6 +31,20 @@ export function servingCarriers(overview?: Overview | null) {
     (reg?.rat === '5G NSA' || (reg?.rat === '5G SA' && item.rat === 'NR') || (reg?.rat === 'LTE' && item.rat === 'LTE')));
 }
 
+/** Match this snapshot's primary measurement, never a neighbour with the same PCI. */
+export function servingTa(overview: Overview | null, primary?: Carrier): number | null {
+  const reg = overview?.register;
+  if (!hasDataService(reg)) return null;
+  const rat = primary?.rat ?? (reg?.rat === '5G SA' ? 'NR' : reg?.rat === 'LTE' ? 'LTE' : null);
+  const cell = overview?.cells?.find(item => item.rat === rat); // SDK entry 0 for this RAT
+  if (!cell || (primary && cellKey(cell) !== cellKey(primary))) return null;
+  const knownId = (id?: string) => !!id && id !== '0';
+  const comparableIds = reg?.rat !== '5G NSA' && knownId(reg?.cell) && knownId(cell.cell);
+  if ((!primary && !comparableIds) || (comparableIds && cell.cell !== reg?.cell)) return null;
+  const ta = cell.ta;
+  return typeof ta === 'number' && Number.isInteger(ta) && ta >= 0 && ta < 0x7fffffff ? ta : null;
+}
+
 export type CellIdentity = Pick<Carrier, 'rat' | 'arfcn' | 'pci'>;
 export function lockMatch(lock: CellIdentity, serving: CellIdentity[]) {
   if (serving.some((cell) => cellKey(cell) === cellKey(lock))) return 'matched';

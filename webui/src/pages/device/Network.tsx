@@ -16,7 +16,7 @@ import { SIGNAL_RSRP_RANGE } from '@/modem/parse';
 import { ubus } from '@/services/deviceUbus';
 import { TAG_COLOR, toneClass, toneColor, ratTagColor } from '@/ui/tokens';
 import type { Cell } from '@/modules/cellular/types';
-import { describeCarriers, hasDataService, lockMatch, servingCarriers, type CarrierLink, type Overview } from '@/modules/cellular/telemetry';
+import { describeCarriers, hasDataService, lockMatch, servingCarriers, servingTa, type CarrierLink, type Overview } from '@/modules/cellular/telemetry';
 import { rsrpPercent, rsrqTone, scoreLabel, scoreTone, sinrTone } from '@/modules/cellular/grade';
 import { useCellularStream } from '@/modules/cellular/stream';
 import LockCellModal from '@/modules/cellular/LockCellModal';
@@ -214,6 +214,7 @@ const Network: React.FC = () => {
     .filter(cc=>cc!=='NR PCC'||!nrPrimary);
   const serving = servingCarriers(data);
   const primaryCarrier = serving[0];
+  const ta = servingTa(data, primaryCarrier);
   const primaryBand = primaryCarrier ? bandName(primaryCarrier.band, primaryCarrier.rat) : '—';
   const carrierSummary = describeCarriers(carriers);
   const metrics = (values?: CarrierLink | null) =>
@@ -394,6 +395,9 @@ const Network: React.FC = () => {
               { label: '签约下行', value: kbps(data?.ambr?.net_dl) },
               { label: '签约上行', value: kbps(data?.ambr?.net_ul) },
               { label: 'RSSI', value: signal?.rssi != null ? `${signal.rssi} dBm` : '—' },
+              { label: '定时提前量 TA', value: ta != null
+                ? <span title="基带原始值，不能直接换算为米">{ta}</span>
+                : !reg ? '—' : attached ? '未上报' : '未驻留' },
               { label: '拒绝原因', value: reg?.reject || '—' },
               { label: '会话 QoS', value: qosValue },
               ...(data?.cqi?.nr != null ? [{ label: 'NR CQI', value: data.cqi.nr }] : []),

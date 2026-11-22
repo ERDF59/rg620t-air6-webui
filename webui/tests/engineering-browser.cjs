@@ -166,6 +166,44 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     await page.goto(origin + '/rg620/#/network/info');
+    if (process.env.SERVING_TA_TEST) {
+      await visible('实时推送中');
+      const reading = page.locator('.kv-item').filter({has: page.getByText('定时提前量 TA', {exact:true})}).locator('.kv-value');
+      const expectTA = async value => {
+        pushNetwork();
+        await reading.getByText(value, {exact:true}).waitFor();
+      };
+      const main = overview.cells[0];
+      main.ta = 16;
+      neighbor.ta = 88; // same PCI, wrong frequency; never use it as a fallback
+      await expectTA('16');
+      if (process.env.ENGINEERING_ARTIFACTS) {
+        await reading.locator('xpath=ancestor::*[contains(@class,"kv-grid")][1]').screenshot({path:path.join(process.env.ENGINEERING_ARTIFACTS,'serving-ta.png')});
+      }
+      main.ta = 0;
+      await expectTA('0');
+      for (const invalid of [null, undefined, 2147483647, 4294967295]) {
+        main.ta = invalid;
+        await expectTA('未上报');
+      }
+      main.ta = 16;
+      overview.register.cell = '14';
+      await expectTA('未上报');
+      overview.register.cell = '12';
+      overview.carriers = [{...carrier, arfcn: 175330}];
+      await expectTA('未上报');
+      overview.carriers = [];
+      await expectTA('16');
+      overview.register.rat = 'LTE';
+      await expectTA('未上报');
+      overview.cells = [{...main, rat:'LTE', ta:3}];
+      await expectTA('3');
+      overview.register.registered = false;
+      await expectTA('未驻留');
+      await page.setViewportSize({width:360,height:800}); await verifyNoOverflow();
+      console.log('PASS: serving TA, zero, unavailable, legacy payload, handover, LTE, detached, mobile');
+      return;
+    }
     if(process.env.LOCK_DIALOG_TEST){
       const row=page.getByRole('button',{name:'锁定 NR 636666 PCI 0',exact:true});
       const dlg=page.getByRole('dialog');
