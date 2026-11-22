@@ -22,7 +22,12 @@ sed 's@^#include <system/audio.h>@#include <stdint.h>\
 vendor=(-L"$RIL_LIB" -Wl,-rpath-link,"$RIL_LIB" -Wl,--disable-new-dtags,-rpath,/usr/lib/t830-quectel)
 loader=(-Wl,--dynamic-linker=/usr/lib/t830-quectel/libc.so -Wl,-z,now)
 "$CC" -O2 -Wall -Wextra -Werror -Wl,--as-needed -I"$RIL_INC" "${vendor[@]}" "$C/dlink-cell.c" -lqlril -o "$s/dlink-cellular"
+"$CC" -O2 -Wall -Wextra -Werror -I"$RIL_INC" ${JSON_C_CFLAGS:-} "${vendor[@]}" "$C/dlink-controls.c" ${JSON_C_LIBS:--ljson-c} -lqlril -o "$s/dlink-controls"
+# AT_INC is the SDK libql_at/inc directory (quectel_atcid_sender.h).
+"$CC" -O2 -Wall -Wextra -Werror -I"${AT_INC:-$VENDOR_INC}" ${JSON_C_CFLAGS:-} "${vendor[@]}" "${loader[@]}" "$C/dlink-at-console.c" ${JSON_C_LIBS:--ljson-c} -lql_at -o "$s/dlink-at-console"
+"$CC" -O2 -Wall -Wextra -Werror -Wl,--as-needed -I"$RIL_INC" "${vendor[@]}" "$C/dlink-sms-delete.c" -lqlril -o "$s/dlink-sms-delete"
 "$CC" -O2 -Wall -Wextra -Werror -Wl,--as-needed -pthread -I"$RIL_INC" "${vendor[@]}" "$C/dlink-cell-diag.c" -lqlril -o "$s/dlink-cell-diag"
+"$CC" -O2 -Wall -Wextra -Werror -Wl,--as-needed -pthread -I"$RIL_INC" "${vendor[@]}" "$C/dlink-cell-scan.c" -lqlril -o "$s/dlink-cell-scan"
 "$CC" -D_LINUX -std=gnu11 -Os -Wall -Werror -I"$VENDOR_INC/mipc/msg" -I"$VENDOR_INC/mipc/common" "${vendor[@]}" "${loader[@]}" "$C/dtmf.c" -l:libmipc_msg.so -o "$s/dlink-dtmf"
 "$CC" -O2 -Wall -Werror -Wno-misleading-indentation -I"$tmp" -I"$SPEECH_OS" -L"$SPEECH_ROOT/usr/lib" -Wl,-rpath-link,"$SPEECH_ROOT/usr/lib:$SPEECH_ROOT/lib" "$C/marker.c" -l:libspeech_drv.so -Wl,--no-as-needed -l:libaudioparamparser.so -lm -o "$s/dlink-bgs-marker"
 for pair in "$C/stereo_rx.c:$s/t830-rx-channels" "$N/rx.c:$v/rx";do

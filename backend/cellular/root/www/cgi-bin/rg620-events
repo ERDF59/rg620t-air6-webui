@@ -1,0 +1,65 @@
+#!/bin/sh
+# Bounded uhttpd CGI lease; leave the other CGI slots available for LuCI.
+dir=/tmp/dlink-cellular-events
+reject() {
+	printf 'Status: %s\r\nCache-Control: no-store\r\nContent-Type: text/plain\r\n\r\n' "$1"
+	exit 0
+}
+case "$REQUEST_METHOD:$CONTENT_LENGTH:${CONTENT_TYPE%%;*}" in
+	POST:35:text/plain|POST::text/plain) ;; # uhttpd leaves length empty for a chunked request
+	*) reject '400 Bad Request';;
+esac
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = dlink,dwr-be7200g ] || reject '404 Not Found'
+caps="$(/usr/bin/ucode /usr/libexec/dlink-cellular-event-access.uc 2>/dev/null)" || reject '403 Forbidden'
+case "$caps" in -S|NS)
+	awk -F: '$1=="root" && $2!="" && $2 !~ /^[!*]/ {n=1} END {exit !n}' /etc/shadow || caps="${caps%S}-";;
+esac
+case "$caps" in N-|NS|-S) ;; *) reject '403 Forbidden';; esac
+
+umask 077
+[ -d "$dir" ] && [ ! -L "$dir" ] || reject '503 Service Unavailable'
+exec 9>"$dir/cgi.lock" || reject '503 Service Unavailable'
+flock -n 9 || reject '503 Service Unavailable'
+uptime_s() { read -r u _ < /proc/uptime; now=${u%%.*}; }
+recent() {
+	local at="$(cat "$dir/$1" 2>/dev/null)"
+	[ -n "$at" ] && [ "$at" -le "$now" ] && [ "$((now-at))" -le "$2" ]
+}
+uptime_s
+recent heartbeat 13 || reject '503 Service Unavailable'
+end=$((now+17))
+lease() {
+	printf '%s\n' "$end" > "$dir/lease.$1.new" && mv -f "$dir/lease.$1.new" "$dir/lease.$1"
+}
+case "$caps" in N*) lease network;; esac
+case "$caps" in *S) lease sms;; esac
+printf 'Content-Type: text/event-stream\r\nCache-Control: no-store, no-transform\r\nX-Content-Type-Options: nosniff\r\n\r\n: rg620\n\n'
+
+last_network= last_sms=
+while [ "$now" -lt "$end" ]; do
+	network=false sms=false
+	recent heartbeat 13 || break
+	if [ "${caps#N}" != "$caps" ] && recent network.at 13; then
+		data="$(cat "$dir/network" 2>/dev/null)"
+		if [ -n "$data" ]; then
+			network=true
+			if [ "$data" != "$last_network" ]; then
+				printf 'event: network\ndata: %s\n\n' "$data"
+				last_network="$data"
+			fi
+		fi
+	fi
+	if [ "${caps%S}" != "$caps" ] && recent sms.at 17; then
+		data="$(cat "$dir/sms" 2>/dev/null)"
+		case "$data" in ''|*[!0-9]*) ;; *)
+			sms=true
+			if [ "$data" != "$last_sms" ]; then
+				printf 'event: sms\ndata: %s\n\n' "$data"
+				last_sms="$data"
+			fi;;
+		esac
+	fi
+	printf 'event: health\ndata: {"network":%s,"sms":%s}\n\n' "$network" "$sms"
+	sleep 1
+	uptime_s
+done

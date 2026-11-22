@@ -9,29 +9,21 @@ import {
   IconRefresh,
   IconSignal,
 } from '@douyinfe/semi-icons';
-import { AutoRefresh, Kv, Metric, PageCard, SectionHeader, TwoCol } from '@/ui/widgets';
+import { useBeams, BeamDetails, beamLabel, beamPower } from '@/modules/cellular/BeamDetails';
+import { AutoRefresh, Kv, Metric, PageCard, SectionHeader } from '@/ui/widgets';
 import { QualityBar, RingGauge, Sparkline } from '@/ui/charts';
 import { SIGNAL_RSRP_RANGE } from '@/modem/parse';
 import { ubus } from '@/services/deviceUbus';
 import { TAG_COLOR, toneClass, toneColor, ratTagColor } from '@/ui/tokens';
-import { type Cell, isServingCell } from '@/modules/cellular/types';
+import type { Cell } from '@/modules/cellular/types';
+import { describeCarriers, hasDataService, lockMatch, servingCarriers, type CarrierLink, type Overview } from '@/modules/cellular/telemetry';
 import { rsrpPercent, rsrqTone, scoreLabel, scoreTone, sinrTone } from '@/modules/cellular/grade';
 import { useCellularStream } from '@/modules/cellular/stream';
 import LockCellModal from '@/modules/cellular/LockCellModal';
 
-// 后端 sinr10 已统一为 0.1 dB（NR 的 dB 值在 dlink-cell.c 里已乘 10），此处一律 /10 还原为 dB。
-type Signal = { rsrp?: number; rsrq?: number; sinr10?: number; rssi?: number } | null;
-type Carrier = { rat: string; primary: boolean; band: number; arfcn: number; pci: number; bw: string; state: number };
-
-type Overview = {
-  ok?: boolean;
-  register?: { state: number; rat: string; plmn: string; tac: number; cell: string; reject: number };
-  lte: Signal;
-  nr: Signal;
-  cells?: Cell[];
-  carriers?: Carrier[];
-  ambr?: { net_dl?: number; net_ul?: number; ims_dl?: number; ims_ul?: number } | null;
-};
+type SessionQos = { ok?: boolean; error?: string; kind?: '5QI' | 'QCI' | ''; sessions?: Array<{
+  cid: number; apn: string; role: 'ims' | 'data'; classes: number[];
+}> };
 
 const OPERATORS: Record<string, string> = {
   '46000': '中国移动',
@@ -70,6 +62,8 @@ const bytes = (value?: number) => {
 
 const Network: React.FC = () => {
   const [data, setData] = useState<Overview | null>(null);
+  const [beamSample,requestBeams]=useState(0);
+  const beams=useBeams(beamSample);
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState({ enabled: true, interval: 5 });
   const [rsrpHistory, setRsrpHistory] = useState<number[]>([]);
@@ -77,95 +71,134 @@ const Network: React.FC = () => {
   const [speed, setSpeed] = useState({ down: 0, up: 0 });
   const [speedHistory, setSpeedHistory] = useState<Array<{ down: number; up: number }>>([]);
   const [traffic, setTraffic] = useState<{ rx?: number; tx?: number; iface?: string; speed?: string }>({});
+  const [qos, setQos] = useState<SessionQos | null>(null);
   const [lockTarget, setLockTarget] = useState<Cell | null>(null);
-  const timer = useRef<number>();
-  const lastSample = useRef<{ rx: number; tx: number; at: number } | null>(null);
+  const reading = useRef(false);
+  const trafficReading = useRef(false);
+  const qosReading = useRef(false);
+  const lastQosAt = useRef(0);
+  const ratRef = useRef('');
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden);
+  const { snapshot, status: liveStatus } = useCellularStream(auto.enabled && pageVisible);
+  const lastSample = useRef<{ rx: number; tx: number; at: number; name: string } | null>(null);
 
   const sampleTraffic = useCallback(async () => {
-    const dumped = await ubus<{ interface?: Array<{ interface: string; device?: string; up: boolean }> }>(
-      'network.interface',
-      'dump',
-    );
-    const cellular =
-      dumped.interface?.find((item) => /ccmni|wwan|usb/i.test(item.device || '')) ||
-      dumped.interface?.find((item) => item.interface === 'modem5g');
-    const name = cellular?.device || 'ccmni2';
-    const status = await ubus<{ statistics?: { rx_bytes?: number; tx_bytes?: number }; speed?: string }>(
-      'network.device',
-      'status',
-      { name },
-    );
-    const rx = status.statistics?.rx_bytes ?? 0;
-    const tx = status.statistics?.tx_bytes ?? 0;
-    setTraffic({ rx, tx, iface: name, speed: status.speed });
+    if (trafficReading.current) return;
+    trafficReading.current = true;
+    try {
+      const dumped = await ubus<{ interface?: Array<{ interface: string; device?: string; l3_device?: string; proto?: string; up: boolean }> }>(
+        'network.interface',
+        'dump',
+      );
+      const cellular =
+        dumped.interface?.find((item) => item.proto === 'ql_datacall' && item.interface === 'wan') ||
+        dumped.interface?.find((item) => item.proto === 'ql_datacall') ||
+        dumped.interface?.find((item) => /ccmni/i.test(item.device || '')) ||
+        dumped.interface?.find((item) => item.interface === 'modem5g');
+      const name = cellular?.l3_device || cellular?.device;
+      if (!name) { setTraffic({}); lastSample.current = null; return; }
+      const status = await ubus<{ statistics?: { rx_bytes?: number; tx_bytes?: number }; speed?: string }>(
+        'network.device',
+        'status',
+        { name },
+      );
+      const rx = status.statistics?.rx_bytes;
+      const tx = status.statistics?.tx_bytes;
+      if (rx == null || tx == null) { setTraffic({ iface: name }); lastSample.current = null; return; }
+      setTraffic({ rx, tx, iface: name, speed: status.speed });
 
-    const now = Date.now();
-    const previous = lastSample.current;
-    if (previous && now > previous.at) {
-      const seconds = (now - previous.at) / 1000;
-      // 计数器是字节，界面单位是 Mbps（十进制兆比特）
-      const down = Math.max(0, ((rx - previous.rx) * 8) / seconds / 1e6);
-      const up = Math.max(0, ((tx - previous.tx) * 8) / seconds / 1e6);
-      setSpeed({ down, up });
-      setSpeedHistory((list) => [...list, { down, up }].slice(-HISTORY_POINTS));
-    }
-    lastSample.current = { rx, tx, at: now };
+      const now = Date.now();
+      const previous = lastSample.current;
+      if (previous?.name === name && now > previous.at && rx >= previous.rx && tx >= previous.tx) {
+        const seconds = (now - previous.at) / 1000;
+        // 计数器是字节，界面单位是 Mbps（十进制兆比特）
+        const down = Math.max(0, ((rx - previous.rx) * 8) / seconds / 1e6);
+        const up = Math.max(0, ((tx - previous.tx) * 8) / seconds / 1e6);
+        setSpeed({ down, up });
+        setSpeedHistory((list) => [...list, { down, up }].slice(-HISTORY_POINTS));
+      }
+      lastSample.current = { rx, tx, at: now, name };
+    } finally { trafficReading.current = false; }
   }, []);
 
-  const load = useCallback(
-    async (silent = false) => {
-      if (!silent) setLoading(true);
-      try {
-        const next = await ubus<Overview>('dlink-cellular', 'overview');
-        setData(next);
-        const rsrp = next.nr?.rsrp ?? next.lte?.rsrp;
-        const sinr10 = next.nr?.sinr10 ?? next.lte?.sinr10;
-        if (rsrp != null) setRsrpHistory((list) => [...list, rsrp].slice(-HISTORY_POINTS));
-        if (sinr10 != null) setSinrHistory((list) => [...list, sinr10 / 10].slice(-HISTORY_POINTS));
-        await sampleTraffic().catch(() => undefined);
-      } catch (error) {
-        if (!silent) Toast.error(error instanceof Error ? error.message : '读取失败');
-      } finally {
-        if (!silent) setLoading(false);
-      }
-    },
-    [sampleTraffic],
-  );
+  const accept = useCallback((next: Overview) => {
+    setData(next);
+    ratRef.current = next.register?.rat || '';
+    const rsrp = next.nr?.rsrp ?? next.lte?.rsrp;
+    const sinr10 = next.nr?.sinr10 ?? next.lte?.sinr10;
+    if (rsrp != null) setRsrpHistory((list) => [...list, rsrp].slice(-HISTORY_POINTS));
+    if (sinr10 != null) setSinrHistory((list) => [...list, sinr10 / 10].slice(-HISTORY_POINTS));
+  }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  const readRadio = useCallback(async (silent = true) => {
+    if (reading.current) return;
+    reading.current = true;
+    if (!silent) setLoading(true);
+    try {
+      const next = await ubus<Overview>('dlink-cellular', 'overview');
+      if (next.ok !== true) throw new Error(next.error === 'busy' ? '基带忙，稍后再读' : '未读到基带遥测');
+      accept(next);
+    } catch (error) {
+      if (!silent) Toast.error(error instanceof Error ? error.message : '读取失败');
+    } finally {
+      reading.current = false;
+      if (!silent) setLoading(false);
+    }
+  }, [accept]);
 
-  useEffect(() => {
-    window.clearInterval(timer.current);
-    if (!auto.enabled) return undefined;
-    timer.current = window.setInterval(() => load(true), auto.interval * 1000);
-    return () => window.clearInterval(timer.current);
-  }, [auto, load]);
+  // 会话 QoS 单独一条 ubus 请求：dlink-cellular 用的是非阻塞锁，必须等 overview 返回后再查。
+  // QCI 很少变化，没必要跟着 5 秒刷新一直查，否则自己也会变成锁竞争源。
+  const readQos = useCallback(async (force = false) => {
+    if (qosReading.current || !ratRef.current) return;
+    if (!force && Date.now() - lastQosAt.current < 30000) return;
+    qosReading.current = true;
+    lastQosAt.current = Date.now();
+    try {
+      const result = await ubus<SessionQos>('dlink-cellular', 'qos', { rat: ratRef.current, contexts: false });
+      setQos(result.ok === true ? result : null);
+    } catch {
+      setQos(null);
+    } finally {
+      qosReading.current = false;
+    }
+  }, []);
 
-  const [pageVisible, setPageVisible] = useState(() => !document.hidden);
+  const load = useCallback(() => {
+    void readRadio(false).then(()=>readQos(true)).then(()=>requestBeams(t=>t+1));
+    void sampleTraffic().catch(() => {});
+  }, [readRadio, readQos, sampleTraffic]);
+
+  useEffect(load, [load]);
   useEffect(() => {
     const onVis = () => setPageVisible(!document.hidden);
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
 
-  const { snapshot: live, status: liveStatus } = useCellularStream(auto.enabled && pageVisible);
-
-  const lastTs = useRef(0);
   useEffect(() => {
-    if (!live || live.ts === lastTs.current) return;
-    lastTs.current = live.ts;
-    const rsrp = live.nr?.rsrp ?? live.lte?.rsrp;
-    const sinr10 = live.nr?.sinr10 ?? live.lte?.sinr10;
-    if (rsrp != null) setRsrpHistory((list) => [...list, rsrp].slice(-HISTORY_POINTS));
-    if (sinr10 != null) setSinrHistory((list) => [...list, sinr10 / 10].slice(-HISTORY_POINTS));
-  }, [live]);
+    if (snapshot) accept(snapshot);
+  }, [snapshot, accept]);
+
+  const pushing = liveStatus === 'live';
+  useEffect(() => {
+    if (!auto.enabled || !pageVisible) return undefined;
+    const id = window.setInterval(() => {
+      void (pushing ? Promise.resolve() : readRadio()).then(()=>readQos()).then(()=>requestBeams(t=>t+1));
+      void sampleTraffic().catch(() => {});
+    }, auto.interval * 1000);
+    return () => window.clearInterval(id);
+  }, [auto, pageVisible, pushing, readRadio, readQos, sampleTraffic]);
 
   const reg = data?.register;
-  const signal = live?.nr || live?.lte || data?.nr || data?.lte;
+  // 制式是 QoS 查询的入参：首屏可能先于 overview 到达，拿到驻留制式后立刻补查一次。
+  const qosRat = reg?.rat || '';
+  useEffect(() => {
+    if (qosRat) void readQos(true);
+  }, [qosRat, readQos]);
+  const attached = hasDataService(reg);
+  const signal = data?.nr || data?.lte;
   const sinr = signal?.sinr10 != null ? signal.sinr10 / 10 : null;
-  const cells = live?.cells ?? data?.cells;
+  const cells = data?.cells;
   const operator = reg?.plmn ? OPERATORS[reg.plmn] || reg.plmn : '未知运营商';
   const score = rsrpPercent(signal?.rsrp);
   const signalTone = scoreTone(score);
@@ -174,9 +207,27 @@ const Network: React.FC = () => {
   const peakDown = speedHistory.reduce((max, p) => Math.max(max, p.down), 0);
   const peakUp = speedHistory.reduce((max, p) => Math.max(max, p.up), 0);
 
-  const primaryCarrier = live?.carriers?.[0] || data?.carriers?.[0];
+  const carriers = data?.carriers || [];
+  const nrPrimary=carriers.find(c=>c.rat==='NR'&&c.primary);
+  const primaryBeam=beams.data?.beams.find(b=>b.cc==='NR PCC');
+  const extraCCs=Array.from(new Set([...(beams.data?.beams||[]),...(beams.data?.rx||[])].map(b=>b.cc)))
+    .filter(cc=>cc!=='NR PCC'||!nrPrimary);
+  const serving = servingCarriers(data);
+  const primaryCarrier = serving[0];
   const primaryBand = primaryCarrier ? bandName(primaryCarrier.band, primaryCarrier.rat) : '—';
-  const carrierCount = live?.carriers?.length ?? data?.carriers?.length ?? 0;
+  const carrierSummary = describeCarriers(carriers);
+  const metrics = (values?: CarrierLink | null) =>
+    (values?.mcs != null ? [values.layers + ' 层', 'MCS ' + values.mcs, values.modulation].filter(Boolean).join(' · ') : values ? values.layers + ' 层' : '—');
+
+  // 会话 QoS 直接展示数据承载的 5QI/QCI，不再让用户跳到拨号页去看。
+  const qosSessions = (qos?.ok ? qos.sessions || [] : []).filter((session) => session.classes.length);
+  const qosDataSessions = qosSessions.filter((session) => session.role === 'data');
+  const qosShown = qosDataSessions.length ? qosDataSessions : qosSessions;
+  const qosClasses = Array.from(new Set(qosShown.flatMap((session) => session.classes)));
+  const qosValue = qos?.kind && qosClasses.length ? `${qos.kind} ${qosClasses.join(' / ')}` : '—';
+  const qosDetail = qosShown.length > 1
+    ? qosShown.map((session) => `${session.apn || '默认 APN'} ${qos?.kind || ''} ${session.classes.join(' / ')}`.trim()).join(' · ')
+    : '';
 
   return (
     <div className="page-stack">
@@ -185,12 +236,12 @@ const Network: React.FC = () => {
         <div className="page-toolbar-left">
           <span className={`live-badge live-badge--${liveStatus}`} role="status">
             <span className="live-badge-dot" aria-hidden="true" />
-            {liveStatus === 'live' ? '实时推送中' : liveStatus === 'connecting' ? '正在连接推送' : '轮询模式'}
+            {!auto.enabled ? '手动刷新' : pushing ? '实时推送中' : liveStatus === 'connecting' ? '正在连接推送' : '轮询模式'}
           </span>
-          {carrierCount > 0 ? (
+          {carriers.length > 0 ? (
             <span className="toolbar-pill">
               <IconLayers size="small" />
-              {carrierCount} 载波聚合 · 主频段 {primaryBand}
+              {carrierSummary} · 主频段 {primaryBand}
             </span>
           ) : null}
         </div>
@@ -213,10 +264,10 @@ const Network: React.FC = () => {
           size="md"
           icon={<IconSignal size="small" />}
           label="驻留网络"
-          value={reg?.rat || '未驻留'}
+          value={attached ? reg?.rat || '已驻留' : reg ? '未驻留' : '读取中'}
           badge={
-            <Tag size="small" color={TAG_COLOR[reg?.state === 2 ? 'success' : 'danger']}>
-              {reg?.state === 2 ? '已驻留' : '未驻留'}
+            <Tag size="small" color={TAG_COLOR[attached ? 'success' : 'danger']}>
+              {attached ? '已驻留' : '未驻留'}
             </Tag>
           }
           hint={`${operator} · 主频段 ${primaryBand}${reg?.plmn ? ` · ${reg.plmn}` : ''}`}
@@ -270,7 +321,7 @@ const Network: React.FC = () => {
           extra={
             <Space spacing={6}>
               {primaryBand !== '—' ? <Tag color={TAG_COLOR.accent}>{primaryBand}</Tag> : null}
-              {data?.carriers?.[0]?.pci ? <Tag color={TAG_COLOR.neutral}>PCI {data.carriers[0].pci}</Tag> : null}
+              {primaryCarrier?.pci != null ? <Tag color={TAG_COLOR.neutral}>PCI {primaryCarrier.pci}</Tag> : null}
             </Space>
           }
         >
@@ -336,16 +387,20 @@ const Network: React.FC = () => {
             items={[
               { label: '运营商', value: operator },
               { label: 'PLMN', value: reg?.plmn || '—' },
-              { label: 'PCI', value: data?.carriers?.[0]?.pci || '—' },
-              { label: '频点 ARFCN', value: data?.carriers?.[0]?.arfcn || '—' },
+              { label: 'PCI', value: primaryCarrier?.pci ?? '—' },
+              { label: '频点 ARFCN', value: primaryCarrier?.arfcn ?? '—' },
               { label: 'TAC', value: reg?.tac ?? '—' },
               { label: '小区 ID', value: reg?.cell || '—' },
               { label: '签约下行', value: kbps(data?.ambr?.net_dl) },
               { label: '签约上行', value: kbps(data?.ambr?.net_ul) },
               { label: 'RSSI', value: signal?.rssi != null ? `${signal.rssi} dBm` : '—' },
-              { label: '拒绝原因', value: reg?.reject ?? '—' },
+              { label: '拒绝原因', value: reg?.reject || '—' },
+              { label: '会话 QoS', value: qosValue },
+              ...(data?.cqi?.nr != null ? [{ label: 'NR CQI', value: data.cqi.nr }] : []),
+              ...(data?.cqi?.lte != null ? [{ label: 'LTE CQI', value: data.cqi.lte }] : []),
             ]}
           />
+          {qosDetail ? <p className="hint-line hint-line--tight">按活动承载：{qosDetail}</p> : null}
         </PageCard>
 
         <PageCard
@@ -383,213 +438,49 @@ const Network: React.FC = () => {
         </PageCard>
       </div>
 
-      {/* Tier 3: 载波聚合 */}
       <section className="page-section">
-        <SectionHeader
-          title="载波聚合"
-          desc={
-            live?.carriers?.length
-              ? `当前激活 ${live.carriers.length} 路载波 · 实时调制与吞吐`
-              : `${data?.carriers?.length ?? 0} 路载波 · 主载波 ${primaryBand}`
-          }
-        />
+        <SectionHeader title="服务载波" desc={!carriers.length && extraCCs.length ? '基带仅上报波束与接收链，未上报载波参数' : carrierSummary} />
         <div className="carrier-grid">
-          {live?.carriers?.length ? (
-            live.carriers.map((item, index) => {
-              const isPrimary = item.role === 'PCC';
-              return (
-                <div
-                  className={`carrier-card${isPrimary ? ' carrier-card--primary' : ''}`}
-                  key={`${item.rat}-${item.role}-${index}`}
-                >
-                  <div className="carrier-card-head">
-                    <div className="carrier-band-group">
-                      <span className="carrier-band-code">{bandName(item.band, item.rat)}</span>
-                      <div className="carrier-band-meta">
-                        <span className="carrier-role">
-                          {isPrimary ? '主载波 PCC' : `辅载波 ${item.role.replace('SCC', '')}`}
-                        </span>
-                        <span className="carrier-specs">
-                          PCI {item.pci}
-                          {item.dl_mhz ? ` · ${item.dl_mhz} MHz` : ''}
-                          {item.dl_mimo ? ` · ${item.dl_mimo}×${item.ul_mimo ?? '?'} MIMO` : ''}
-                        </span>
-                      </div>
-                    </div>
-                    <Space spacing={4}>
-                      <Tag size="small" color={ratTagColor(item.rat)}>
-                        {item.rat}
-                      </Tag>
-                      {item.active === false ? (
-                        <Tag size="small" color={TAG_COLOR.neutral}>
-                          未激活
-                        </Tag>
-                      ) : null}
-                    </Space>
+          {carriers.map((item, index) => (
+            <div className={`carrier-card${item.primary ? ' carrier-card--primary' : ''}`} key={`${item.rat}-${item.arfcn}-${item.pci}-${index}`}>
+              <div className="carrier-card-head">
+                <div className="carrier-band-group">
+                  <span className="carrier-band-code">{bandName(item.band, item.rat)}</span>
+                  <div className="carrier-band-meta">
+                    <span className="carrier-role">{item.primary ? '主载波 PCC' : '辅载波 SCC'}</span>
+                    <span className="carrier-specs">PCI {item.pci}{item.bw ? ` · ${item.bw} MHz` : ''}</span>
                   </div>
-
-                  {item.dl_tput_kbps != null ? (
-                    <div className="carrier-tput-bar">
-                      <div>
-                        <span className="carrier-tput-label">下行吞吐</span>
-                        <b>{(item.dl_tput_kbps / 1000).toFixed(2)} MB/s</b>
-                      </div>
-                      <div>
-                        <span className="carrier-tput-label">上行吞吐</span>
-                        <b>{((item.ul_tput_kbps ?? 0) / 1000).toFixed(2)} MB/s</b>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <Kv
-                    dense
-                    columns={2}
-                    items={[
-                      {
-                        label: '下行 MCS',
-                        value: item.dl_mcs != null ? `${item.dl_mcs} ${item.dl_mod || ''}`.trim() : '—',
-                      },
-                      {
-                        label: '上行 MCS',
-                        value: item.ul_mcs != null ? `${item.ul_mcs} ${item.ul_mod || ''}`.trim() : '—',
-                      },
-                      { label: '下行 RB', value: item.dl_rb != null ? String(item.dl_rb) : '—' },
-                      { label: '上行 RB', value: item.ul_rb != null ? String(item.ul_rb) : '—' },
-                      {
-                        label: '发射功率',
-                        value: item.pusch_dbm != null ? `PUSCH ${item.pusch_dbm} dBm` : '—',
-                      },
-                      { label: '频点', value: item.arfcn != null ? String(item.arfcn) : '—' },
-                    ]}
-                  />
                 </div>
-              );
-            })
-          ) : data?.carriers?.length ? (
-            data.carriers.map((item, index) => (
-              <div
-                className={`carrier-card${index === 0 ? ' carrier-card--primary' : ''}`}
-                key={`${item.rat}-${item.arfcn}-${index}`}
-              >
-                <div className="carrier-card-head">
-                  <div className="carrier-band-group">
-                    <span className="carrier-band-code">{bandName(item.band, item.rat)}</span>
-                    <div className="carrier-band-meta">
-                      <span className="carrier-role">{index === 0 ? '主载波 PCC' : `辅载波 ${index}`}</span>
-                      <span className="carrier-specs">
-                        PCI {item.pci} · {item.bw || '—'} MHz
-                      </span>
-                    </div>
-                  </div>
-                  <Tag size="small" color={ratTagColor(item.rat)}>
-                    {item.rat}
-                  </Tag>
-                </div>
-                <Kv
-                  dense
-                  columns={2}
-                  items={[
-                    { label: '下行频点', value: String(item.arfcn) },
-                    { label: 'PCI', value: String(item.pci) },
-                    { label: '带宽', value: `${item.bw || '—'} MHz` },
-                    {
-                      label: '状态',
-                      value: (
-                        <Tag size="small" color={TAG_COLOR[item.state === 2 ? 'success' : 'neutral']}>
-                          {item.state === 2 ? '已激活' : String(item.state)}
-                        </Tag>
-                      ),
-                    },
-                  ]}
-                />
+                <Tag size="small" color={ratTagColor(item.rat)}>{item.rat}</Tag>
               </div>
-            ))
-          ) : (
-            <div className="empty-surface">暂无载波聚合信息</div>
-          )}
+              <Kv dense columns={2} items={[
+                { label: '频点 ARFCN', value: item.arfcn || '—' },
+                { label: '载波状态', value: item.primary ? '主载波' : item.state === 2 ? '已激活' : item.state === 1 ? '未激活' : '未上报' },
+                { label: '下行层数 / 调制', value: metrics(item.dl) },
+                { label: '上行层数 / 调制', value: metrics(item.ul) },
+                { label: '基带下行吞吐', value: item.dl?.kbytes_s != null ? kbps(item.dl.kbytes_s * 8) : '—' },
+                { label: '蜂窝上行 PUSCH', value: item.ul?.pusch_dbm != null ? `${item.ul.pusch_dbm} dBm` : '—' },
+                ...(item===nrPrimary ? [
+                  {label:'最佳波束',value:beamLabel(primaryBeam?.id)},
+                  {label:'波束 RSRP',value:beamPower(primaryBeam?.power)},
+                ] : []),
+              ]} />
+              {item===nrPrimary && <BeamDetails data={beams.data} cc="NR PCC" error={beams.error}/>}
+            </div>
+          ))}
+          {!carriers.length && !extraCCs.length ? <div className="empty-surface">基带未上报服务载波</div> : null}
+          {extraCCs.map(cc=>{
+            const b=beams.data?.beams.find(row=>row.cc===cc);
+            return <div className="carrier-card carrier-measurement" key={cc}>
+              <div className="carrier-card-head"><strong>{cc==='NR PCC'?'主载波 PCC':cc || '未标识载波'}</strong>
+                <Tag size="small" color={ratTagColor('NR')}>NR</Tag></div>
+              <Kv dense items={[{label:'最佳波束',value:beamLabel(b?.id)},{label:'波束 RSRP',value:beamPower(b?.power)}]} />
+              <BeamDetails data={beams.data} cc={cc} />
+            </div>;
+          })}
         </div>
       </section>
 
-      {/* Tier 3: 链路质量（仅 SSE 存在时展示） */}
-      {live?.meas || live?.radio || live?.cap ? (
-        <section className="page-section">
-          <SectionHeader title="链路质量与能力" desc="基带实时空口测量与协商能力" />
-          <TwoCol>
-            <PageCard title="空口测量" hint="波束、秩与路径损耗">
-              <Kv
-                dense
-                columns={3}
-                items={[
-                  { label: '秩指示 (Rank)', value: live.meas?.rank ? `Rank ${live.meas.rank}` : '—' },
-                  { label: '路径损耗', value: live.meas?.path_loss != null ? `${live.meas.path_loss} dB` : '—' },
-                  {
-                    label: 'SSB 波束',
-                    value: live.meas?.beam_id != null && live.meas.beam_id !== 255 ? `#${live.meas.beam_id}` : '—',
-                  },
-                  {
-                    label: '最佳波束 RSRP',
-                    value: live.meas?.best_beam_rsrp != null ? `${live.meas.best_beam_rsrp} dBm` : '—',
-                  },
-                  {
-                    label: 'SSB 平均 RSRP',
-                    value: live.meas?.ssb_rsrp != null ? `${live.meas.ssb_rsrp} dBm` : '—',
-                  },
-                  {
-                    label: 'SSB 平均 SINR',
-                    value: live.meas?.ssb_snr10 != null ? `${live.meas.ssb_snr10 / 10} dB` : '—',
-                  },
-                ]}
-              />
-            </PageCard>
-            <PageCard title="网络能力" hint="信道质量与服务域">
-              <Kv
-                dense
-                columns={3}
-                items={[
-                  {
-                    label: 'CQI',
-                    value:
-                      live.radio?.nr_cqi != null
-                        ? `${live.radio.nr_cqi} / 15`
-                        : live.radio?.lte_cqi != null
-                          ? `${live.radio.lte_cqi} / 15`
-                          : '—',
-                  },
-                  {
-                    label: '当前频段',
-                    value: live.radio?.nr_band
-                      ? bandName(live.radio.nr_band, 'NR')
-                      : live.radio?.lte_band
-                        ? bandName(live.radio.lte_band, 'LTE')
-                        : '—',
-                  },
-                  { label: '载波带宽', value: live.radio?.nr_dl_bw || '—' },
-                  {
-                    label: '4×4 MIMO',
-                    value: (
-                      <Tag size="small" color={TAG_COLOR[live.cap?.nr_4x4_mimo ? 'success' : 'neutral']}>
-                        {live.cap?.nr_4x4_mimo ? '已启用' : '未启用'}
-                      </Tag>
-                    ),
-                  },
-                  {
-                    label: '服务域',
-                    value:
-                      live.cap?.srv_domain === 1
-                        ? 'CS & PS'
-                        : live.cap?.srv_domain === 0
-                          ? 'PS Only'
-                          : '—',
-                  },
-                  { label: '网络时间', value: live.nitz?.time || '—' },
-                ]}
-              />
-            </PageCard>
-          </TwoCol>
-        </section>
-      ) : null}
-
-      {/* Tier 4: 邻区监测列表 */}
       <PageCard
         title="邻区监测"
         hint={`共 ${cells?.length ?? 0} 个测量小区 · 点击任意一行可快速锁定`}
@@ -615,11 +506,11 @@ const Network: React.FC = () => {
           {(cells || []).map((item, index) => {
             const pct = rsrpPercent(item.rsrp);
             const tone = scoreTone(pct);
-            const serving = isServingCell(item, reg?.cell);
+            const onServingCell = lockMatch(item, serving) === 'matched';
             const cellSinr = item.sinr10 != null ? item.sinr10 / 10 : null;
             return (
               <div
-                className={`neighbor-row${serving ? ' is-serving' : ''}`}
+                className={`neighbor-row${onServingCell ? ' is-serving' : ''}`}
                 key={`${item.rat}-${item.arfcn}-${item.pci}-${index}`}
                 role="button"
                 tabIndex={0}
@@ -636,8 +527,8 @@ const Network: React.FC = () => {
                 <span className="neighbor-freq">{item.arfcn}</span>
                 <span className="neighbor-pci">{item.pci}</span>
                 <span className={`neighbor-rsrp ${toneClass(tone)}`}>
-                  {item.rsrp}
-                  <i>dBm</i>
+                  {item.rsrp ?? '—'}
+                  {item.rsrp != null && <i>dBm</i>}
                 </span>
                 <span className={`neighbor-quality ${toneClass(rsrqTone(item.rsrq))}`}>
                   {item.rsrq != null ? `${item.rsrq} dB` : '—'}
@@ -648,7 +539,7 @@ const Network: React.FC = () => {
                 <span className="neighbor-cell">
                   {item.cell && item.cell !== '0' ? (
                     <>
-                      {serving ? <em className="neighbor-serving-mark">主小区</em> : null}
+                      {onServingCell ? <em className="neighbor-serving-mark">主小区</em> : null}
                       <b>{item.cell}</b>
                     </>
                   ) : (
@@ -680,7 +571,7 @@ const Network: React.FC = () => {
 
       <LockCellModal
         cell={lockTarget}
-        serving={lockTarget ? isServingCell(lockTarget, reg?.cell) : false}
+        serving={lockTarget ? lockMatch(lockTarget, serving) === 'matched' : false}
         onClose={() => setLockTarget(null)}
         onDone={() => {
           setLockTarget(null);

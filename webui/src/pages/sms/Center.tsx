@@ -40,6 +40,10 @@ interface Contact {
 
 const at = () => ATService.getInstance();
 
+/** 选中/删除的稳定标识：设备短信用存储索引，本地缓存的已发送短信索引统一是 -1，必须另用内容组合键。 */
+const messageKey = (msg: SMS) =>
+  msg.index >= 0 ? `i:${msg.index}` : `c:${msg.number}|${msg.time}|${msg.content}`;
+
 const formatDetailedTime = (time: string): string => {
   const m = time.match(/(\d{2})\/(\d{2})\/(\d{2}),(\d{2}):(\d{2}):(\d{2})/);
   if (m) return `20${m[1]}年${m[2]}月${m[3]}日 ${m[4]}:${m[5]}:${m[6]}`;
@@ -69,7 +73,7 @@ const SMSCenter: React.FC = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [newMessageModal, setNewMessageModal] = useState(false);
   const [batchDeleteMode, setBatchDeleteMode] = useState(false);
-  const [selectedMessages, setSelectedMessages] = useState<number[]>([]);
+  const [selectedMessages, setSelectedMessages] = useState<string[]>([]);
   const [smsEnabled, setSmsEnabled] = useState(true);
   const [imsEnabled, setImsEnabled] = useState(true);
   const [storageInfo, setStorageInfo] = useState({ used: 0, total: 0 });
@@ -182,6 +186,8 @@ const SMSCenter: React.FC = () => {
   }, [refresh, refreshStorage]);
 
   useEffect(() => {
+    // 切换会话时旧的选中项已经不可见，继续留着会让批量删除删到别的会话。
+    setSelectedMessages([]);
     if (!selectedContact) {
       setMessages([]);
       return;
@@ -197,13 +203,15 @@ const SMSCenter: React.FC = () => {
   }, [messages]);
 
   const handleSelectContact = (number: string) => {
+    setSelectedMessages([]);
     setSelectedContact(number);
   };
 
-  const handleMessageSelect = (msg: SMS, checked: boolean) => {
-    setSelectedMessages((prev) =>
-      checked ? [...prev, msg.index] : prev.filter((i) => i !== msg.index),
-    );
+  const handleMessageSelect = (key: string, checked: boolean) => {
+    setSelectedMessages((prev) => {
+      if (!checked) return prev.filter((item) => item !== key);
+      return prev.includes(key) ? prev : [...prev, key];
+    });
   };
 
   const handleRefresh = async () => {
@@ -333,47 +341,56 @@ const SMSCenter: React.FC = () => {
   };
 
   const handleBatchDelete = () => {
-    if (selectedMessages.length === 0) {
+    const selected = messages.filter((m) => selectedMessages.includes(messageKey(m)));
+    if (selected.length === 0) {
       Toast.warning('请先选择要删除的短信');
       return;
     }
-    const selected = messages.filter((m) => selectedMessages.includes(m.index));
     Modal.confirm({
       title: '确认删除',
-      content: `确定删除选中的 ${selectedMessages.length} 条短信吗？此操作无法撤销。`,
+      content: `确定删除选中的 ${selected.length} 条短信吗？此操作无法撤销。`,
       okText: '删除',
       cancelText: '取消',
       okButtonProps: { theme: 'solid', type: 'danger' },
       onOk: async () => {
         setLoading(true);
+        const failedKeys = new Set<string>();
+        const errors: string[] = [];
+        let removed = 0;
         try {
           const cachedToRemove = selected.filter((m) => m.index < 0);
-          const deviceToRemove = selected.filter((m) => m.index >= 0);
-
           if (cachedToRemove.length > 0) {
-            const updated = getCachedSentMessages().filter(
-              (c) =>
-                !cachedToRemove.some(
-                  (m) => m.content === c.content && m.number === c.number && m.time === c.time,
-                ),
-            );
+            const doomed = new Set(cachedToRemove.map(messageKey));
+            const updated = getCachedSentMessages().filter((c) => !doomed.has(messageKey(c)));
             localStorage.setItem(SMS_CACHE_KEY, JSON.stringify(updated));
+            removed += cachedToRemove.length;
           }
 
+          // 模组删除后存储索引可能被压缩，必须从大到小删，否则后面的索引会指到已被挤动的条目。
+          const deviceToRemove = selected.filter((m) => m.index >= 0).sort((a, b) => b.index - a.index);
           for (const m of deviceToRemove) {
-            const res = await at().sendCommand(`AT+CMGD=${m.index}`);
-            if (!res.success) throw new Error(res.error || '批量删除失败');
-            await new Promise((r) => setTimeout(r, 300));
+            try {
+              const res = await at().sendCommand(`AT+CMGD=${m.index}`);
+              if (!res.success) throw new Error(res.error || '模组未确认删除');
+              removed += 1;
+              await new Promise((r) => setTimeout(r, 300));
+            } catch (e) {
+              failedKeys.add(messageKey(m));
+              errors.push(`#${m.index} ${e instanceof Error ? e.message : '删除失败'}`);
+            }
           }
-
-          setSelectedMessages([]);
-          setBatchDeleteMode(false);
-          await Promise.all([refresh(), refreshStorage()]);
-          Toast.success(`成功删除 ${selectedMessages.length} 条短信`);
-        } catch (e) {
-          Toast.error(e instanceof Error ? e.message : '批量删除失败');
         } finally {
+          // 部分失败也要刷新，让界面与模组实际存储一致；失败项留在选中态便于重试。
+          setSelectedMessages(selected.filter((m) => failedKeys.has(messageKey(m))).map(messageKey));
+          await Promise.all([refresh(), refreshStorage()]).catch(() => undefined);
           setLoading(false);
+        }
+
+        if (failedKeys.size === 0) {
+          setBatchDeleteMode(false);
+          Toast.success(`已删除 ${removed} 条短信`);
+        } else {
+          Toast.warning(`已删除 ${removed} 条，${errors.length} 条失败：${errors[0]}`);
         }
       },
     });
@@ -386,8 +403,8 @@ const SMSCenter: React.FC = () => {
     >
       {batchDeleteMode && (
         <Checkbox
-          checked={selectedMessages.includes(msg.index)}
-          onChange={(e) => handleMessageSelect(msg, !!e.target.checked)}
+          checked={selectedMessages.includes(messageKey(msg))}
+          onChange={(e) => handleMessageSelect(messageKey(msg), !!e.target.checked)}
           style={{ marginTop: 6 }}
         />
       )}
@@ -415,6 +432,12 @@ const SMSCenter: React.FC = () => {
 
   const storagePct =
     storageInfo.total > 0 ? Math.round((storageInfo.used / storageInfo.total) * 100) : 0;
+
+  // 只统计当前会话里仍然存在的短信，避免刷新后残留的旧选中项把数量算多。
+  const selectedCount = messages.filter((m) => selectedMessages.includes(messageKey(m))).length;
+  const allSelected =
+    messages.length > 0 &&
+    Array.from(new Set(messages.map(messageKey))).every((key) => selectedMessages.includes(key));
 
   return (
     <div className="sms-page">
@@ -458,16 +481,11 @@ const SMSCenter: React.FC = () => {
               {batchDeleteMode && (
                 <Button
                   onClick={() => {
-                    if (messages.length > 0 && selectedMessages.length === messages.length) {
-                      setSelectedMessages([]);
-                    } else {
-                      setSelectedMessages(messages.map((m) => m.index));
-                    }
+                    const keys = Array.from(new Set(messages.map(messageKey)));
+                    setSelectedMessages(allSelected ? [] : keys);
                   }}
                 >
-                  {selectedMessages.length === messages.length && messages.length > 0
-                    ? '取消全选'
-                    : '全选'}
+                  {allSelected ? '取消全选' : '全选'}
                 </Button>
               )}
             </>
@@ -551,9 +569,9 @@ const SMSCenter: React.FC = () => {
                     icon={<IconDelete />}
                     onClick={handleBatchDelete}
                     loading={loading}
-                    disabled={selectedMessages.length === 0}
+                    disabled={selectedCount === 0}
                   >
-                    删除选中的 {selectedMessages.length} 条短信
+                    删除选中的 {selectedCount} 条短信
                   </Button>
                 </div>
               ) : (

@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Space, Table, Tag, Toast, Typography } from '@douyinfe/semi-ui';
 import { IconClock, IconGlobeStroke, IconLink, IconRefresh } from '@douyinfe/semi-icons';
 import { Kv, Metric, PageCard, TwoCol } from '@/ui/widgets';
 import { ubus } from '@/services/deviceUbus';
 import { TAG_COLOR } from '@/ui/tokens';
+import type { Overview } from '@/modules/cellular/telemetry';
+import { engineeringError, simLabels } from '@/modules/cellular/engineering';
 
 type Address4 = { address: string; mask?: number };
 type Address6 = { address: string; mask?: number };
@@ -22,6 +24,12 @@ type Iface = {
   route?: Array<{ target: string; mask?: number; gateway?: string; nexthop?: string }>;
 };
 
+type SessionQos = { ok?: boolean; error?: string; kind?: '5QI' | 'QCI' | ''; sessions?: Array<{
+  cid: number; apn: string; role: 'ims' | 'data'; classes: number[];
+}> };
+type Checks = { ok?: boolean; sim?: string; radio?: boolean | null; ims?: boolean | null; ceer?: number | null; ratmode?: string; error?: string };
+type Counters = { ok?: boolean; counters?: Record<string, { attempt: string; failure: string; lost: string }> | null; error?: string };
+
 const duration = (seconds?: number) => {
   if (!seconds) return '—';
   const d = Math.floor(seconds / 86400);
@@ -38,15 +46,47 @@ const Dial: React.FC = () => {
   const [rows, setRows] = useState<Iface[]>([]);
   const [busy, setBusy] = useState('');
   const [loading, setLoading] = useState(false);
+  const [qos, setQos] = useState<SessionQos | null>(null);
+  const [checks, setChecks] = useState<Checks | null>(null);
+  const [counters, setCounters] = useState<Counters | null>(null);
+  const [diagIssue, setDiagIssue] = useState('');
+  const inFlight = useRef(false);
+
+  const diagnose = async () => {
+    setBusy('diag');
+    setDiagIssue('');
+    try {
+      const next = await ubus<Checks>('dlink-cellular', 'diag_checks');
+      setChecks(next);
+      if (next.ok !== true) throw new Error(next.error);
+      const stats = await ubus<Counters>('dlink-cellular', 'diag');
+      setCounters(stats);
+      if (stats.ok !== true) throw new Error(stats.error);
+    } catch (err) {
+      setDiagIssue(engineeringError(err));
+    } finally {
+      setBusy('');
+    }
+  };
 
   const load = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setLoading(true);
     try {
       const data = await ubus<{ interface?: Iface[] }>('network.interface', 'dump');
       setRows(data.interface || []);
+      const bearer = data.interface?.find((item) => item.interface === 'wan' && item.proto === 'ql_datacall')
+        || data.interface?.find((item) => item.proto === 'ql_datacall');
+      if (!bearer?.up) { setQos(null); return; }
+      try {
+        const net = await ubus<Overview>('dlink-cellular', 'summary');
+        setQos(await ubus<SessionQos>('dlink-cellular', 'qos', { rat: net.register?.rat || '', contexts: true }));
+      } catch { setQos({ ok: false }); }
     } catch (error) {
       Toast.error(error instanceof Error ? error.message : '读取接口失败');
     } finally {
+      inFlight.current = false;
       setLoading(false);
     }
   }, []);
@@ -56,8 +96,9 @@ const Dial: React.FC = () => {
   }, [load]);
 
   const cellular =
-    rows.find((row) => /ccmni|wwan|usb|modem/i.test(`${row.interface} ${row.device || ''}`)) ||
+    rows.find((row) => row.interface === 'wan' && row.proto === 'ql_datacall') ||
     rows.find((row) => row.proto === 'ql_datacall') ||
+    rows.find((row) => /ccmni|wwan|usb|modem/i.test(`${row.interface} ${row.device || ''}`)) ||
     rows.find((row) => row.interface === 'wan');
   const lan = rows.find((row) => row.interface === 'lan');
   const shown = rows.filter(
@@ -84,6 +125,7 @@ const Dial: React.FC = () => {
             type="danger"
             theme="solid"
             loading={busy === 'redial'}
+            disabled={busy === 'diag' || loading}
             onClick={async () => {
               setBusy('redial');
               try {
@@ -202,6 +244,34 @@ const Dial: React.FC = () => {
               <Typography.Text type="tertiary">没有读到 LAN 接口</Typography.Text>
             </div>
           )}
+        </PageCard>
+      </TwoCol>
+
+      <TwoCol>
+        <PageCard title="已拨通的 APN 与 QoS" hint="基带当前活动上下文；会话等级与信号 CQI 是不同指标">
+          {qos?.ok && qos.sessions?.length ? (
+            <Kv layout="rows" items={qos.sessions.map((session) => ({
+              label: `${session.role === 'ims' ? 'IMS' : '数据'} · CID ${session.cid}`,
+              value: <><span className="mono">{session.apn}</span>{session.classes.length ? ` · ${qos.kind} ${session.classes.join(' / ')}` : ' · QoS 未上报'}</>,
+            }))} />
+          ) : <p className="engineering-note">{loading ? '正在读取活动上下文…' : qos?.ok ? '未报告活动上下文。' : cellular?.up ? '未能读取活动上下文，请刷新重试。' : '蜂窝承载尚未拨通。'}</p>}
+        </PageCard>
+        <PageCard title="拨号诊断" hint="读取 SIM、射频、IMS 和最近一次失败原因"
+          extra={<Button size="small" loading={busy === 'diag'} disabled={loading || busy === 'redial'} onClick={() => void diagnose()}>读取诊断</Button>}>
+          {checks?.ok ? <Kv layout="rows" items={[
+            { label: 'SIM', value: simLabels[checks.sim || ''] || '未知' },
+            { label: '射频', value: checks.radio == null ? '未上报' : checks.radio ? '开启' : '关闭' },
+            { label: 'IMS', value: checks.ims == null ? '未上报' : checks.ims ? '已注册' : '未注册' },
+            { label: '首选制式', value: checks.ratmode || '—' },
+            { label: 'CEER 原因码', value: checks.ceer ?? '未上报' },
+            ...(['nr_rach', 'lte_rach', 'nr_rrc', 'lte_rrc'] as const).flatMap((key) => {
+              const value = counters?.counters?.[key];
+              if (!value) return [];
+              const [rat, kind] = key.split('_');
+              return [{ label: `${rat.toUpperCase()} ${kind.toUpperCase()}（失败 / 尝试）`, value: `${value.failure} / ${value.attempt}` }];
+            }),
+          ]} /> : null}
+          {diagIssue ? <p className="engineering-note">{diagIssue}</p> : !checks && <p className="engineering-note">按需读取，不会重拨或改动配置。</p>}
         </PageCard>
       </TwoCol>
 

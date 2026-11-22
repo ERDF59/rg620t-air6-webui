@@ -1,0 +1,45 @@
+#!/bin/sh
+# A single shared sampler; no modem calls when there is no authenticated lease.
+dir=/tmp/dlink-cellular-events
+umask 077
+[ ! -L "$dir" ] && mkdir -p "$dir" || exit 1
+uptime_s() { read -r u _ < /proc/uptime; now=${u%%.*}; }
+publish() {
+	printf '%s\n' "$2" > "$dir/$1.new" && mv -f "$dir/$1.new" "$dir/$1"
+}
+wanted() {
+	local until="$(cat "$dir/lease.$1" 2>/dev/null)"
+	[ -n "$until" ] && [ "$now" -lt "$until" ]
+}
+ok() { [ "$(printf '%s\n' "$1" | jsonfilter -e '@.ok')" = true ]; }
+
+last_sms=
+next_network=0
+next_sms=0
+while :; do
+	uptime_s
+	publish heartbeat "$now"
+	if [ "$now" -ge "$next_network" ] && wanted network; then
+		next_network=$((now+4))
+		result="$(timeout 6 /usr/libexec/dlink-cellular overview 2>/dev/null)"
+		if ok "$result"; then
+			publish network "$result"
+			uptime_s
+			publish network.at "$now"
+		fi
+	fi
+	if [ "$now" -ge "$next_sms" ] && wanted sms; then
+		next_sms=$((now+8))
+		# The inventory is held only in this process. The web stream contains a generation number.
+		result="$(timeout 4 /usr/libexec/dlink-cellular sms_list 2>/dev/null)"
+		if ok "$result"; then
+			uptime_s
+			if [ "$last_sms" != "$result" ]; then
+				publish sms "$now"
+				last_sms="$result"
+			fi
+			publish sms.at "$now"
+		fi
+	fi
+	sleep 1
+done

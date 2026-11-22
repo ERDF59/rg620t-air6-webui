@@ -4,10 +4,11 @@
 declare module 'node-pdu' {
   export class Deliver {
     _address?: { _phone?: string };
+    readonly serviceCenterAddress: { toString(): string };
     _data?: {
       getText: () => string;
       _parts?: Array<{
-        header?: { ies?: Array<{ data?: { maxMsgNum?: number; msgRef?: number; msgSeqNo?: number } }> };
+        header?: { ies?: Array<{ type: number; data?: { maxMsgNum?: number; msgRef?: number; msgSeqNo?: number } }> };
       }>;
     };
     _serviceCenterTimeStamp?: { time?: number; tzOff?: number };

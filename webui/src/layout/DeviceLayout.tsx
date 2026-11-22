@@ -12,11 +12,13 @@ import {
   IconServer,
   IconSignal,
   IconSun,
+  IconSetting,
 } from '@douyinfe/semi-icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { clearSession } from '@/services/deviceUbus';
 import { maxWidth } from '@/ui/tokens';
+import { CellularEventsProvider } from '@/modules/cellular/stream';
 import IncomingAlerts from '@/modules/alerts/IncomingAlerts';
 
 const { Header, Sider, Content, Footer } = Layout;
@@ -42,6 +44,7 @@ const NAV_GROUPS: Array<{ title: string; items: NavItem[] }> = [
     items: [
       { path: '/sms/center', label: '短信中心', icon: <IconComment /> },
       { path: '/system/info', label: '设备信息', icon: <IconServer /> },
+      { path: '/engineering', label: '工程工具', icon: <IconSetting /> },
       { path: '/at', label: '关于设备', icon: <IconInfoCircle /> },
     ],
   },
@@ -54,6 +57,7 @@ const PAGE_META: Record<string, { title: string; desc: string }> = {
   '/network/voice': { title: '语音通话', desc: '呼叫控制、拨号键盘与 IMS 状态' },
   '/system/info': { title: '设备信息', desc: '硬件负载、基带版本与无线射频' },
   '/sms/center': { title: '短信中心', desc: '收发短信与 SIM 存储管理' },
+  '/engineering': { title: '工程工具', desc: '基带查询、射频设置与在线扫小区' },
   '/at': { title: '关于设备', desc: '接口架构与本机服务说明' },
 };
 
@@ -83,6 +87,7 @@ const DeviceLayout: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   };
 
   return (
+    <CellularEventsProvider>
     <Layout className="app-shell">
       <Sider
         className={[
@@ -203,6 +208,7 @@ const DeviceLayout: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       </Layout>
       <IncomingAlerts />
     </Layout>
+    </CellularEventsProvider>
   );
 };
 

@@ -6,9 +6,12 @@ BEGIN { FS="," }
 	if ($0=="OK") ready=1
 	if (mode=="contexts" && $1 ~ /^[+]CGCONTRDP:/ && NF>=3) {
 		cid=$1; sub(/^[+]CGCONTRDP:[[:space:]]*/,"",cid)
-		apn=tolower($3); gsub(/^[[:space:]"]+|[[:space:]"]+$/,"",apn)
-		sub(/[.]mnc[0-9][0-9][0-9][.]mcc[0-9][0-9][0-9][.]gprs$/,"",apn)
-		if (cid !~ /^(0|[1-9][0-9]?)$/ || cid+0>63 || apn !~ /^[a-z0-9._-]+$/ || length(apn)>100 || cid in seen || n>=8) next
+		apn=$3; gsub(/^[[:space:]"]+|[[:space:]"]+$/,"",apn)
+		if (raw!=1) {
+			apn=tolower(apn)
+			sub(/[.]mnc[0-9][0-9][0-9][.]mcc[0-9][0-9][0-9][.]gprs$/,"",apn)
+		}
+		if (cid !~ /^(0|[1-9][0-9]?)$/ || cid+0>63 || apn !~ /^[A-Za-z0-9._-]+$/ || length(apn)>100 || cid in seen || n>=8) next
 		seen[cid]=1
 		out[++n]=cid ":" apn
 	}

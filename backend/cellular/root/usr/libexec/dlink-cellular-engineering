@@ -1,0 +1,158 @@
+#!/bin/sh
+
+error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
+
+profile() {
+	case "$1" in
+		'2g') radio=MT7990_1_1; ap=ra0; band=2.4;;
+		'5g') radio=MT7990_1_2; ap=rai0; band=5;;
+		*) return 1;;
+	esac
+}
+wifi_read() {
+	[ -f /lib/wifi/mtkdat.lua ] &&
+	[ "$(uci -q get "wireless.$radio")" = wifi-device ] &&
+	[ "$(uci -q get "wireless.$radio.type")" = mtkwifi ] || return 1
+	percent="$(uci -q get "wireless.$radio.txpower")" || percent=100
+	case "$percent" in [1-9]|[1-9][0-9]|100) ;; *) return 1;; esac
+}
+# Address only this firmware's primary AP; never touch virtual SSIDs or MLO.
+wifi_flag_read() {
+    [ "$(uci -q get "wireless.$ap")" = wifi-iface ] &&
+    [ "$(uci -q get "wireless.$ap.device")" = "$radio" ] &&
+    [ "$(uci -q get "wireless.$ap.mode")" = ap ] || return 1
+    case "$1" in
+        broadcast) opt=hidden; invert=1;;
+        isolate) opt=isolate; invert=0;;
+        wmm) opt=wmm; invert=0;;
+        ap_enabled) opt=disabled; invert=1;;
+        *) return 1;;
+    esac
+    raw="$(uci -q get "wireless.$ap.$opt")" || return 1
+    case "$raw" in 0|1) flagval=$((raw ^ invert));; *) return 1;; esac
+}
+autodial_read() {
+    [ "$(uci -q get network.wan)" = interface ] && [ "$(uci -q get network.wan.proto)" = ql_datacall ] || return 1
+    auto="$(uci -q get network.wan.auto)" || auto=1
+    case "$auto" in 0|1) ;; *) return 1;; esac
+}
+thermal_reading() {
+    local val digits
+    [ -n "$1" ] && IFS= read -r val < "$2" || return 0
+    digits=${val#-}
+    case "$digits" in ''|*[!0-9]*) return 0;; esac
+    [ "${#digits}" -le 6 ] && [ "$val" -ge -40000 ] && [ "$val" -le 160000 ] || return 0
+    json_add_object ""
+    json_add_string sensor "$1"
+    json_add_int milli_c "$val"
+    json_close_object
+}
+engineering_info() {
+	. /usr/share/libubox/jshn.sh
+	json_init
+	json_add_boolean ok 1
+	json_add_boolean scan "$([ -x /usr/libexec/dlink-cell-scan ] && [ -x /etc/init.d/dlink-cellular-scan ] && echo 1 || echo 0)"
+	if autodial_read; then json_add_boolean wan_auto "$auto"; fi
+	json_add_array wifi
+	for key in 2g 5g; do
+		profile "$key"
+		wifi_read || continue
+		json_add_object ""
+		json_add_string radio "$key"
+		json_add_int percent "$percent"
+        for flag in broadcast isolate wmm ap_enabled; do
+            if wifi_flag_read "$flag"; then json_add_boolean "$flag" "$flagval"; fi
+        done
+		json_close_object
+	done
+	json_close_array
+	json_add_array thermal
+	for zone in /sys/class/thermal/thermal_zone*; do
+		[ -r "$zone/type" ] && [ -r "$zone/temp" ] || continue
+		IFS= read -r name < "$zone/type" || continue
+		thermal_reading "$name" "$zone/temp"
+	done
+	for hw in /sys/class/hwmon/hwmon*; do
+		[ -r "$hw/name" ] && IFS= read -r chip < "$hw/name" || continue
+		for input in "$hw"/temp[0-9]*_input; do
+			[ -r "$input" ] || continue
+			channel=${input##*/}; channel=${channel%_input}
+			label=''
+			[ ! -r "$hw/${channel}_label" ] || IFS= read -r label < "$hw/${channel}_label"
+			thermal_reading "$chip / ${label:-$channel}" "$input"
+		done
+	done
+	json_close_array
+	json_dump
+}
+case "$1" in
+	info) engineering_info;;
+	at)
+		# Exact AT actions only; no chaining, write forms, console, or device identifiers.
+		case "$2" in
+			AT|ATI|AT+CGMM|AT+CGMR|AT+CSQ|AT+CESQ|'AT+CEREG?'|'AT+C5GREG?'|'AT+CPIN?'|'AT+CFUN?'|AT+CEER|AT+QTEMP|'AT+COPS?') ;;
+			*) error input; exit 0;;
+		esac
+		exec 9>/var/lock/dlink-cellular.lock || { error busy; exit 0; }
+		flock -n 9 || { error busy; exit 0; }
+		raw="$(timeout 4 /usr/bin/mipc_wan_cli --at_cmd "$2" 2>/dev/null)"
+		status=$?
+		[ -n "$raw" ] || { error at_no_response; exit 0; }
+		reply="$(printf '%s\n' "$raw" | tr -d '\r' | head -c 8192)"
+		modem_ok=0
+		[ "$status" -ne 0 ] || [ "$(printf '%s\n' "$reply" | awk 'NF {last=$0} END {print last}')" != OK ] || modem_ok=1
+		. /usr/share/libubox/jshn.sh
+		json_init
+		json_add_boolean ok 1
+		json_add_boolean modem_ok "$modem_ok"
+		json_add_string command "$2"
+		json_add_string reply "$reply"
+		json_dump
+		;;
+    wan_auto)
+        case "$2:$3" in [01]:[01]) ;; *) error input; exit 0;; esac
+        exec 9>/var/lock/dlink-wan-auto.lock || { error busy; exit 0; }; flock -n 9 || { error busy; exit 0; }
+        [ -z "$(uci -q changes network)" ] || { error network_pending; exit 0; }
+        autodial_read && [ "$3" = "$auto" ] || { error policy_changed; exit 0; }
+        tmp="$(mktemp -d /tmp/dlink-wan-auto.XXXXXX)" || { error policy_write; exit 0; }; trap 'rm -rf "$tmp"' EXIT
+        uci -q -t "$tmp" set "network.wan.auto=$2" && uci -q -t "$tmp" commit network || { error policy_write; exit 0; }
+        autodial_read && [ "$2" = "$auto" ] || { error readback; exit 0; }
+        printf '{"ok":true,"enabled":%s}\n' "$([ "$auto" = 1 ] && echo true || echo false)"
+        ;;
+    wifi_flag)
+        profile "$2" || { error input; exit 0; }
+        case "$3:$4:$5" in broadcast:[01]:[01]|isolate:[01]:[01]|wmm:[01]:[01]|ap_enabled:[01]:[01]) ;; *) error input; exit 0;; esac
+        exec 9>/var/lock/dlink-wifi-power.lock || { error busy; exit 0; }
+        flock -n 9 || { error busy; exit 0; }
+        [ -z "$(uci -q changes wireless)" ] || { error wifi_pending; exit 0; }
+        wifi_read && wifi_flag_read "$3" || { error wifi_unsupported; exit 0; }
+        [ "$flagval" = "$5" ] || { error wifi_changed; exit 0; }
+        if [ "$5" != "$4" ]; then
+            tmp="$(mktemp -d /tmp/dlink-wifi-switch.XXXXXX)" || { error wifi_write; exit 0; }
+            trap 'rm -rf "$tmp"' EXIT
+            uci -q -t "$tmp" set "wireless.$ap.$opt=$(($4 ^ invert))" &&
+                uci -q -t "$tmp" commit wireless || { error wifi_write; exit 0; }
+            wifi_flag_read "$3" && [ "$flagval" = "$4" ] || { error readback; exit 0; }
+        fi
+        printf '{"ok":true,"enabled":%s,"applied":false}\n' "$([ "$flagval" = 1 ] && echo true || echo false)"
+        ;;
+	wifi_set)
+		profile "$2" || { error input; exit 0; }
+		case "$3" in 9|15|30|60|90|100) ;; *) error input; exit 0;; esac
+		exec 9>/var/lock/dlink-wifi-power.lock || { error busy; exit 0; }
+		flock -n 9 || { error busy; exit 0; }
+		[ -z "$(uci -q changes wireless)" ] || { error wifi_pending; exit 0; }
+		wifi_read || { error wifi_unsupported; exit 0; }
+		[ "$percent" = "$4" ] || { error wifi_changed; exit 0; }
+		if [ "$percent" != "$3" ]; then
+			tmp="$(mktemp -d /tmp/dlink-wifi-power.XXXXXX)" || { error wifi_write; exit 0; }
+			trap 'rm -rf "$tmp"' EXIT
+			# Isolate this UCI delta; commit only this option, never reload network/wireless here.
+			uci -q -t "$tmp" set "wireless.$radio.txpower=$3" &&
+				uci -q -t "$tmp" commit wireless || { error wifi_write; exit 0; }
+			wifi_read && [ "$percent" = "$3" ] || { error readback; exit 0; }
+		fi
+		printf '{"ok":true,"percent":%s,"applied":false}\n' "$percent"
+		;;
+	*) error input;;
+esac

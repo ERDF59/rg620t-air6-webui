@@ -13,6 +13,8 @@ import System from '@/pages/device/System';
 import Sms from '@/pages/device/Sms';
 import About from '@/pages/device/About';
 
+const Engineering = React.lazy(() => import('@/pages/device/Engineering'));
+
 const App: React.FC = () => {
   const [authed, setAuthed] = useState(() => Boolean(getSession()));
 
@@ -36,6 +38,7 @@ const App: React.FC = () => {
               <Route path="/network/voice" element={<Voice />} />
               <Route path="/system/info" element={<System />} />
               <Route path="/sms/center" element={<Sms />} />
+              <Route path="/engineering" element={<React.Suspense fallback={<p className="empty-surface">正在打开工程工具…</p>}><Engineering /></React.Suspense>} />
               <Route path="/at" element={<About />} />
               <Route path="*" element={<Navigate to="/network/info" replace />} />
             </Route>

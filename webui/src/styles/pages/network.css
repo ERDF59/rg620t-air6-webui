@@ -448,3 +448,17 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Beam readings belong to serving carriers, not the headline KPI strip. */
+.carrier-card--primary:only-child { grid-column: 1 / -1; }
+@media (min-width: 960px) {
+  .carrier-card--primary:only-child > .kv-grid { grid-template-columns:repeat(4,minmax(0,1fr)); }
+}
+.carrier-beam-details { border-top:1px solid var(--color-border); padding-top:var(--space-2); color:var(--color-text-secondary); font-size:var(--font-size-sm); }
+.carrier-beam-details summary { cursor:pointer; width:fit-content; padding-block:var(--space-1); }
+.carrier-beam-details summary:hover { color:var(--color-accent-text); }
+.carrier-beam-body { display:grid; gap:var(--space-3); padding-block:var(--space-3); }
+.carrier-measurement:only-child { grid-column:1/-1; }
+.rx-table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:var(--font-size-sm); }
+.rx-table :is(td,th) { padding:var(--space-1) 0; text-align:right; border-bottom:1px solid var(--color-border); }
+.rx-table th:first-child { text-align:left; }

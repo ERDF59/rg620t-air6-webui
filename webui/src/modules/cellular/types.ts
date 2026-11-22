@@ -13,7 +13,7 @@ export type Cell = {
   pci: number;
   cell: string;
   tac: number;
-  rsrp: number;
+  rsrp: number | null;
   rsrq?: number | null;
   sinr10?: number | null;
   rssi?: number | null;
@@ -21,17 +21,13 @@ export type Cell = {
 };
 
 /** 小区锁定候选：邻区、锁频、弹窗三处共用 */
-export type LockCandidate = { rat: Rat; arfcn: number; pci: number; rsrp?: number; cell?: string };
+export type LockCandidate = { rat: Rat; arfcn: number; pci: number; rsrp?: number | null; cell?: string };
 
 export const cellKey = (item: { rat: string; arfcn: number; pci: number }) =>
   `${item.rat}:${item.arfcn}:${item.pci}`;
 
 export const cellLabel = (item: { rat: string; arfcn: number; pci: number }) =>
   `${item.rat} ${item.arfcn} / PCI ${item.pci}`;
-
-/** 判断该小区是否就是当前驻留小区（cell 为 0 表示基带未上报） */
-export const isServingCell = (item: Cell, servingCellId?: string) =>
-  Boolean(item.cell && item.cell !== '0' && servingCellId && item.cell === servingCellId);
 
 /** 把 cell 转成锁定接口需要的形态 */
 export const toCandidate = (item: Cell): LockCandidate => ({

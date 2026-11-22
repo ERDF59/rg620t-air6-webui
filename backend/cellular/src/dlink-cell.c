@@ -8,6 +8,7 @@
 #include <sys/file.h>
 #include "ql_nw.h"
 #include "ql_sms.h"
+#include "ql_sim.h"
 #include "sms-submit.h"
 
 #define COUNT(a) (sizeof(a) / sizeof((a)[0]))
@@ -41,24 +42,63 @@ static void signal_values(int rsrp, int rsrq, int snr, int rssi, int nr)
 	printf(",\"sinr10\":"); num(snr,-350,500);
 	printf(",\"rssi\":"); num(rssi,-150,-10); putchar('}');
 }
-static void cell(const char *type, uint32_t arfcn, uint32_t pci, uint64_t cid, uint32_t tac, int rsrp, int *comma)
+static void cell(const char *type, uint32_t arfcn, uint32_t pci, uint64_t cid, uint32_t tac, int rsrp, int rsrq, int sinr, int *comma)
 {
 	if (*comma) putchar(',');
 	*comma=1;
 	if (tac>0xffffff) { tac=0; if (cid==0xfffffff || cid==0xffffffff || cid==0xfffffffff) cid=0; }
 	printf("{\"rat\":\"%s\",\"arfcn\":%" PRIu32 ",\"pci\":%" PRIu32 ",\"cell\":\"%" PRIu64 "\",\"tac\":%" PRIu32 ",\"rsrp\":",
 		type,arfcn,pci,cid,tac);
-	num(rsrp,-160,-30); putchar('}');
+	num(rsrp,-160,-30);
+	printf(",\"rsrq\":"); num(rsrq,-45,20);
+	printf(",\"sinr10\":");
+	/* The UI uses tenths of a dB. Cell info supplies NR in whole dB, LTE in tenths.
+	 * Reject absent/out-of-range NR readings before scaling an SDK sentinel. */
+	if (!strcmp(type,"NR")) {
+		if (sinr < -35 || sinr > 50) fputs("null",stdout);
+		else printf("%d",sinr * 10);
+	} else num(sinr,-200,300);
+	putchar('}');
 }
-static void carrier(int nr, int primary, int band, uint32_t pci, uint64_t arfcn, unsigned bw, unsigned state, int *comma)
+static int registered(int state)
+{
+	return state==QL_NW_SERVICE_FULL || state==QL_NW_SERVICE_ROAMING ||
+	       state==QL_NW_SERVICE_HOME_CSFB_NOT_PREF || state==QL_NW_SERVICE_ROAMING_CSFB_NOT_PREF;
+}
+static void link_metrics(const char *key, unsigned layers, unsigned mcs, unsigned mod, unsigned rate, int tx)
+{
+	static const char *const modulation[]={"BPSK","QPSK","16QAM","64QAM","256QAM"};
+	printf("\"%s\":",key);
+	if (layers<1 || layers>8) { fputs("null",stdout); return; }
+	printf("{\"layers\":%u,\"mcs\":",layers); num(mcs,0,31);
+	fputs(",\"modulation\":",stdout);
+	if (mod<COUNT(modulation)) printf("\"%s\"",modulation[mod]); else fputs("null",stdout);
+	printf(",\"kbytes_s\":"); num(rate,0,UINT16_MAX-1);
+	if (tx!=INT16_MIN) { fputs(",\"pusch_dbm\":",stdout); num(tx,-60,40); }
+	putchar('}');
+}
+static void carrier(int nr, int primary, int band, uint32_t pci, uint64_t arfcn, unsigned bw, unsigned state,
+                    const pcc_ca_info_table *pcc, const scc_ca_info_table *scc, int *comma)
 {
 	const char *lte[]={"1.4","3","5","10","15","20"};
 	const char *five[]={"5","10","15","20","25","30","40","50","60","80","90","100","70","200","400"};
 	if (band<1 || band>1024) return;
 	if (*comma) putchar(',');
 	*comma=1;
-	printf("{\"rat\":\"%s\",\"primary\":%s,\"band\":%d,\"arfcn\":%" PRIu64 ",\"pci\":%" PRIu32 ",\"bw\":\"%s\",\"state\":%u}",
+	printf("{\"rat\":\"%s\",\"primary\":%s,\"band\":%d,\"arfcn\":%" PRIu64 ",\"pci\":%" PRIu32 ",\"bw\":\"%s\",\"state\":%u,",
 		nr?"NR":"LTE",primary?"true":"false",band,arfcn,pci,nr?(bw<COUNT(five)?five[bw]:""):(bw<COUNT(lte)?lte[bw]:""),state);
+	if (pcc) {
+		link_metrics("dl",pcc->pcc_dl_mimo,pcc->pcc_dl_mcs,pcc->pcc_dl_modulation,pcc->pcc_dl_tput,INT16_MIN);
+		putchar(',');
+		link_metrics("ul",pcc->pcc_ul_mimo,pcc->pcc_ul_mcs,pcc->pcc_ul_modulation,pcc->pcc_ul_tput,pcc->pcc_pusch_tx_pwr);
+	} else if (scc && state==2) {
+		link_metrics("dl",scc->scc_dl_mimo,scc->scc_dl_mcs,scc->scc_dl_modulation,scc->scc_dl_tput,INT16_MIN);
+		putchar(',');
+		if (scc->scc_ul_configured==1)
+			link_metrics("ul",scc->scc_ul_mimo,scc->scc_ul_mcs,scc->scc_ul_modulation,scc->scc_ul_tput,scc->scc_pusch_tx_pwr);
+		else fputs("\"ul\":null",stdout);
+	} else fputs("\"dl\":null,\"ul\":null",stdout);
+	putchar('}');
 }
 static void ambr_value(const char *value, size_t len)
 {
@@ -71,14 +111,12 @@ static void ambr_value(const char *value, size_t len)
 	if (errno || raw[0]<'0' || raw[0]>'9' || !kbps || strcmp(unit," Kbps")) fputs("null",stdout);
 	else printf("%llu",kbps);
 }
-static void ambr(void)
+static void ambr(const ql_nw_get_band_info_t *b)
 {
-	ql_nw_get_band_info_t b={0};
-	if (ql_nw_get_band_info(&b)!=0) { fputs("null",stdout); return; }
-	fputs("{\"net_dl\":",stdout); ambr_value(b.net_ambr_dl,sizeof b.net_ambr_dl);
-	fputs(",\"net_ul\":",stdout); ambr_value(b.net_ambr_ul,sizeof b.net_ambr_ul);
-	fputs(",\"ims_dl\":",stdout); ambr_value(b.ims_ambr_dl,sizeof b.ims_ambr_dl);
-	fputs(",\"ims_ul\":",stdout); ambr_value(b.ims_ambr_ul,sizeof b.ims_ambr_ul);
+	fputs("{\"net_dl\":",stdout); ambr_value(b->net_ambr_dl,sizeof b->net_ambr_dl);
+	fputs(",\"net_ul\":",stdout); ambr_value(b->net_ambr_ul,sizeof b->net_ambr_ul);
+	fputs(",\"ims_dl\":",stdout); ambr_value(b->ims_ambr_dl,sizeof b->ims_ambr_dl);
+	fputs(",\"ims_ul\":",stdout); ambr_value(b->ims_ambr_ul,sizeof b->ims_ambr_ul);
 	putchar('}');
 }
 static void overview(int detail)
@@ -96,7 +134,7 @@ static void overview(int detail)
 	printf("{\"ok\":true,\"register\":");
 	if (rr) printf("null");
 	else {
-		printf("{\"state\":%d,\"rat\":\"%s\",\"plmn\":\"",reg.reg_state,rat(reg.radio_tech));
+		printf("{\"state\":%d,\"registered\":%s,\"rat\":\"%s\",\"plmn\":\"",reg.reg_state,registered(reg.reg_state)?"true":"false",rat(reg.radio_tech));
 		digit_str(reg.mcc,3); digit_str(reg.mnc,3);
 		printf("\",\"tac\":%" PRIu32 ",\"cell\":\"%" PRIu64 "\",\"reject\":%d}",reg.tac,reg.cid,reg.reg_state==QL_NW_SERVICE_DENIED ? reg.deny_reason : 0);
 	}
@@ -111,33 +149,44 @@ static void overview(int detail)
 		putchar('[');
 		if (c.nr_info_valid==1)
 			for (size_t i=0;i<c.nr_info_len && i<COUNT(c.nr_info);i++)
-				cell("NR",c.nr_info[i].nr_arfcn,c.nr_info[i].pci,c.nr_info[i].cid,c.nr_info[i].tac,c.nr_info[i].rsrp,&comma);
+				cell("NR",c.nr_info[i].nr_arfcn,c.nr_info[i].pci,c.nr_info[i].cid,c.nr_info[i].tac,c.nr_info[i].rsrp,
+				     c.nr_info[i].rsrq,c.nr_info[i].sinr,&comma);
 		if (c.lte_info_valid==1)
 			for (size_t i=0;i<c.lte_info_len && i<COUNT(c.lte_info);i++)
-				cell("LTE",c.lte_info[i].earfcn,c.lte_info[i].pci,c.lte_info[i].cid,c.lte_info[i].tac,c.lte_info[i].rsrp,&comma);
+				cell("LTE",c.lte_info[i].earfcn,c.lte_info[i].pci,c.lte_info[i].cid,c.lte_info[i].tac,c.lte_info[i].rsrp,
+				     c.lte_info[i].rsrq,c.lte_info[i].sinr,&comma);
 		putchar(']');
 	}
 	printf(",\"carriers\":");
 	if (ra) printf("null");
 	else {
 		putchar('['); comma=0;
-		if (ca.nr_pcc_num) carrier(1,1,ca.nr_pcc_ca_info.pcc_band,ca.nr_pcc_ca_info.pcc_pci,ca.nr_pcc_ca_info.pcc_arfcn,ca.nr_pcc_ca_info.pcc_dl_bandwidth,2,&comma);
-		if (ca.lte_pcc_num) carrier(0,1,ca.lte_pcc_ca_info.pcc_band,ca.lte_pcc_ca_info.pcc_pci,ca.lte_pcc_ca_info.pcc_arfcn,ca.lte_pcc_ca_info.pcc_dl_bandwidth,2,&comma);
+		if (ca.nr_pcc_num) carrier(1,1,ca.nr_pcc_ca_info.pcc_band,ca.nr_pcc_ca_info.pcc_pci,ca.nr_pcc_ca_info.pcc_arfcn,ca.nr_pcc_ca_info.pcc_dl_bandwidth,2,&ca.nr_pcc_ca_info,NULL,&comma);
+		if (ca.lte_pcc_num) carrier(0,1,ca.lte_pcc_ca_info.pcc_band,ca.lte_pcc_ca_info.pcc_pci,ca.lte_pcc_ca_info.pcc_arfcn,ca.lte_pcc_ca_info.pcc_dl_bandwidth,2,&ca.lte_pcc_ca_info,NULL,&comma);
 		for (size_t i=0;i<ca.nr_scc_num && i<COUNT(ca.nr_scc_ca_info);i++) {
 			const scc_ca_info_table *a=&ca.nr_scc_ca_info[i];
-			carrier(1,0,a->scc_band,a->scc_pci,a->scc_arfcn,a->scc_dl_bandwidth,a->scc_state,&comma);
+			carrier(1,0,a->scc_band,a->scc_pci,a->scc_arfcn,a->scc_dl_bandwidth,a->scc_state,NULL,a,&comma);
 		}
 		for (size_t i=0;i<ca.lte_scc_num && i<COUNT(ca.lte_scc_ca_info);i++) {
 			const scc_ca_info_table *a=&ca.lte_scc_ca_info[i];
-			carrier(0,0,a->scc_band,a->scc_pci,a->scc_arfcn,a->scc_dl_bandwidth,a->scc_state,&comma);
+			carrier(0,0,a->scc_band,a->scc_pci,a->scc_arfcn,a->scc_dl_bandwidth,a->scc_state,NULL,a,&comma);
 		}
 		putchar(']');
 	}
+	ql_nw_get_band_info_t band={0};
+	const int has_band=!rr && registered(reg.reg_state) && !ql_nw_get_band_info(&band);
 	fputs(",\"ambr\":",stdout);
-	if (!rr && (reg.reg_state==QL_NW_SERVICE_FULL || reg.reg_state==QL_NW_SERVICE_ROAMING ||
-	    reg.reg_state==QL_NW_SERVICE_HOME_CSFB_NOT_PREF || reg.reg_state==QL_NW_SERVICE_ROAMING_CSFB_NOT_PREF))
-		ambr();
-	else fputs("null",stdout);
+	if (has_band) ambr(&band); else fputs("null",stdout);
+	fputs(",\"cqi\":",stdout);
+	if (has_band) {
+		fputs("{\"nr\":",stdout);
+		num((reg.radio_tech==QL_NW_RADIO_TECH_NR5G || reg.radio_tech==QL_NW_RADIO_TECH_NSA5G) &&
+		    band.nr_band>=1 && band.nr_band<=1024?band.nr_cqi:-1,0,15);
+		fputs(",\"lte\":",stdout);
+		num((reg.radio_tech==QL_NW_RADIO_TECH_LTE || reg.radio_tech==QL_NW_RADIO_TECH_NSA5G) &&
+		    band.lte_band>=1 && band.lte_band<=1024?band.lte_cqi:-1,0,15);
+		putchar('}');
+	} else fputs("null",stdout);
 	printf("}\n");
 }
 static void bands(const uint32_t *mask, size_t count)
@@ -342,18 +391,77 @@ static void send_sms(void)
 	int rc=ql_sms_send_pdu(&pdu);
 	if (rc) fail("sms_send",rc); else puts("{\"ok\":true}");
 }
+static int mimo_read(int nr, ql_nw_4x4_mimo_mode_t *mode)
+{
+	mode->mode=-1;
+	return nr?ql_nw_get_nr_4x4_mimo_mode(mode):ql_nw_get_lte_4x4_mimo_mode(mode);
+}
+static void mimo_value(int nr)
+{
+	ql_nw_4x4_mimo_mode_t m;
+	if (mimo_read(nr,&m) || (m.mode!=0 && m.mode!=1)) fputs("null",stdout);
+	else fputs(m.mode?"true":"false",stdout);
+}
+static void mimo_info(void)
+{
+	fputs("{\"ok\":true,\"lte\":",stdout); mimo_value(0);
+	fputs(",\"nr\":",stdout); mimo_value(1); puts("}");
+}
+static void mimo_set(const char *name, const char *enabled)
+{
+	const int nr=!strcmp(name,"NR");
+	if ((!nr && strcmp(name,"LTE")) || (strcmp(enabled,"0") && strcmp(enabled,"1"))) { fail("input",0); return; }
+	ql_nw_4x4_mimo_mode_t actual, desired={.mode=enabled[0]=='1'};
+	int rc=mimo_read(nr,&actual);
+	if (rc || (actual.mode!=0 && actual.mode!=1)) { fail("mimo_unsupported",rc); return; }
+	if (actual.mode!=desired.mode) {
+		rc=nr?ql_nw_set_nr_4x4_mimo_mode(&desired):ql_nw_set_lte_4x4_mimo_mode(&desired);
+		if (rc) { fail("mimo_write",rc); return; }
+		if ((rc=mimo_read(nr,&actual)) || actual.mode!=desired.mode) { fail("readback",rc); return; }
+	}
+	printf("{\"ok\":true,\"enabled\":%s}\n",actual.mode?"true":"false");
+}
+static void sim_status(void)
+{
+	int rc=ql_sim_init(SIM_IPC_MODE_DEFAULT);
+	if (rc) { fail("sim_init",rc); return; }
+	ql_sim_card_info_t card={0};
+	ql_sim_get_all_remain_time_resp_t counts={.result=UINT32_MAX,.pin1_count=UINT8_MAX,.puk1_count=UINT8_MAX};
+	rc=ql_sim_get_card_info(QL_SIM_SLOT_1,&card);
+	if (rc) fail("sim_read",rc);
+	else {
+		const char *state="other";
+		switch (card.state) {
+		case QL_SIM_STATUS_NOT_INSERT: state="absent"; break;
+		case QL_SIM_STATUS_READY: case QL_SIM_STATUS_COMPLETE_READY: state="ready"; break;
+		case QL_SIM_STATUS_SIM_PIN: state="pin"; break;
+		case QL_SIM_STATUS_SIM_PUK: state="puk"; break;
+		default: break;
+		}
+		printf("{\"ok\":true,\"state\":\"%s\",\"pin1\":",state);
+		const int count_ok=card.state!=QL_SIM_STATUS_NOT_INSERT &&
+			!ql_sim_get_all_remain_time(QL_SIM_SLOT_1,&counts) && counts.result==0;
+		num(count_ok?counts.pin1_count:-1,0,254);
+		fputs(",\"puk1\":",stdout); num(count_ok?counts.puk1_count:-1,0,254);
+		puts("}");
+	}
+	ql_sim_release();
+}
 int main(int argc,char **argv)
 {
 	if (argc<2) { fail("input",0); return 0; }
 	const char *action=argv[1];
 	int fd=open("/var/lock/dlink-cellular.lock",O_CREAT|O_CLOEXEC|O_NOFOLLOW|O_WRONLY,0600);
 	if (fd<0 || flock(fd,LOCK_EX|LOCK_NB)) { fail("busy",0); return 0; }
+	if (!strcmp(action,"sim_status") && argc==2) { sim_status(); return 0; }
 	int sms=!strncmp(action,"sms_",4);
 	int rc=sms ? ql_sms_init(SMS_IPC_MODE_DEFAULT) : ql_nw_init(NW_IPC_MODE_DEFAULT);
 	if (rc) { fail("ril_init",rc); return 0; }
 	if (!strcmp(action,"overview")) overview(1);
 	else if (!strcmp(action,"summary")) overview(0);
 	else if (!strcmp(action,"locks")) locks();
+	else if (!strcmp(action,"mimo_info") && argc==2) mimo_info();
+	else if (!strcmp(action,"mimo_set") && argc==4) mimo_set(argv[2],argv[3]);
 	else if (!strcmp(action,"band_set") && argc==4) band_set(argv[2],argv[3]);
 	else if (!strcmp(action,"cell_set")) cell_set(argc,argv);
 	else if (!strcmp(action,"cell_list") && argc==3) cell_list(argv[2]);

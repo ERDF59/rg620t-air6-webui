@@ -1,8 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Banner, Button, Checkbox, Input, Space, Tag, Toast, Typography } from '@douyinfe/semi-ui';
 import { IconLock, IconPlus, IconRefresh, IconUnlock } from '@douyinfe/semi-icons';
 import { Field, PageCard, SectionHeader, TwoCol } from '@/ui/widgets';
 import { ubus } from '@/services/deviceUbus';
+import { Link, useSearchParams } from 'react-router-dom';
+import { useCellularStream } from '@/modules/cellular/stream';
+import { lockMatch, servingCarriers, type Overview } from '@/modules/cellular/telemetry';
 import { TAG_COLOR, ratTagColor } from '@/ui/tokens';
 import {
   type Cell,
@@ -20,11 +23,6 @@ type Locks = {
   current?: { lte: number[]; nr: number[] } | null;
   supported?: { lte: number[]; nr: number[] } | null;
 };
-type Overview = {
-  cells?: Cell[];
-  register?: { cell?: string; rat?: string };
-};
-
 const MAX_PER_RAT = 32;
 const LIMIT: Record<Rat, { arfcn: number; pci: number }> = {
   NR: { arfcn: 3279165, pci: 1007 },
@@ -34,7 +32,7 @@ const ERRORS: Record<string, string> = {
   input: '输入不合法，检查 ARFCN 与 PCI 的范围。',
   cell_read: '基带读不到当前锁定状态。',
   cell_write: '基带拒绝了单小区锁定请求。',
-  readback: '写入后回读不一致，锁定未生效。',
+  readback: '写入后配置回读不一致，请刷新确认当前配置。',
   single_lock: '当前有单小区锁，先解除再提交白名单。',
   cell_list_write: '基带拒绝了白名单请求。',
   cell_duplicate: '白名单里有重复小区。',
@@ -77,32 +75,60 @@ const Chips: React.FC<{
 
 const Settings: React.FC = () => {
   const [locks, setLocks] = useState<Locks | null>(null);
-  const [cells, setCells] = useState<Cell[]>([]);
-  const [servingCell, setServingCell] = useState('');
+  const [overview, setOverview] = useState<Overview | null>(null);
+  const { snapshot: live, status: liveStatus } = useCellularStream(true);
+  const [query] = useSearchParams();
+  const manualEntry = useRef<HTMLDivElement>(null);
+  const readingOverview = useRef(false);
   const [nrBands, setNrBands] = useState<number[]>([]);
   const [lteBands, setLteBands] = useState<number[]>([]);
-  const [manual, setManual] = useState<{ rat: Rat; arfcn: string; pci: string }>({ rat: 'NR', arfcn: '', pci: '' });
+  const [manual, setManual] = useState<{ rat: Rat; arfcn: string; pci: string }>(() => {
+    const rat = query.get('rat');
+    const arfcn = query.get('arfcn') || '';
+    const pci = query.get('pci') || '';
+    return (rat === 'NR' || rat === 'LTE') && /^\d{1,7}$/.test(arfcn) && /^\d{1,4}$/.test(pci)
+      ? { rat, arfcn, pci } : { rat: 'NR', arfcn: '', pci: '' };
+  });
   const [picked, setPicked] = useState<Candidate[]>([]);
   const [busy, setBusy] = useState('');
   const [loading, setLoading] = useState(false);
   const [note, setNote] = useState('');
+
+  const readOverview = useCallback(async () => {
+    if (readingOverview.current) return;
+    readingOverview.current = true;
+    try {
+      const next = await ubus<Overview>('dlink-cellular', 'overview');
+      setOverview(next.ok === true ? next : null);
+    } catch { setOverview(null); }
+    finally { readingOverview.current = false; }
+  }, []);
+
+  useEffect(() => { if (live) setOverview(live); }, [live]);
+  useEffect(() => {
+    if (query.has('arfcn')) manualEntry.current?.scrollIntoView({ block: 'center' });
+  }, [query]);
+  useEffect(() => {
+    if (liveStatus === 'live') return;
+    const id = window.setInterval(() => { if (!document.hidden) void readOverview(); }, 5000);
+    return () => window.clearInterval(id);
+  }, [liveStatus, readOverview]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       // dlink-cellular 后端用非阻塞文件锁，两条请求并发到达会有一条直接返回 busy，必须串行取。
       const lockState = await ubus<Locks>('dlink-cellular', 'locks');
+      if (lockState.ok === false) throw new Error('busy');
       setLocks(lockState);
       if (lockState.current?.nr?.length) setNrBands(lockState.current.nr);
       if (lockState.current?.lte?.length) setLteBands(lockState.current.lte);
 
-      const overview = await ubus<Overview>('dlink-cellular', 'overview');
-      setCells(overview.cells || []);
-      setServingCell(overview.register?.cell || '');
+      await readOverview();
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [readOverview]);
 
   useEffect(() => {
     load().catch((error) => Toast.error(pickError(error)));
@@ -115,7 +141,7 @@ const Settings: React.FC = () => {
       await task();
       setNote(ok);
       Toast.success(ok);
-      await load();
+      await load().catch(() => setNote(ok + '；暂未刷新状态。'));
     } catch (error) {
       const text = pickError(error);
       setNote(text);
@@ -127,9 +153,11 @@ const Settings: React.FC = () => {
 
   const singleLocked = Boolean(locks?.cell?.opt);
 
+  const serving = servingCarriers(overview);
+  const match = locks?.cell?.opt ? lockMatch(locks.cell, serving) : 'unknown';
   const candidates = useMemo<Candidate[]>(
-    () => cells.filter((item) => item.rat === 'NR' || item.rat === 'LTE').map(toCandidate),
-    [cells],
+    () => (overview?.cells || []).filter((item: Cell) => item.rat === 'NR' || item.rat === 'LTE').map(toCandidate),
+    [overview?.cells],
   );
 
   const togglePicked = (item: Candidate) => {
@@ -182,8 +210,8 @@ const Settings: React.FC = () => {
       {/* 当前生效锁定状态 */}
       <PageCard
         variant="hero"
-        title="当前生效状态"
-        hint="基带实际生效的单小区锁与频段列表"
+        title="锁定配置与实际驻留"
+        hint="以实际驻留的制式、频点和 PCI 核对；本页不会重启射频"
         extra={
           <Space spacing={8}>
             {singleLocked ? (
@@ -191,7 +219,8 @@ const Settings: React.FC = () => {
                 解除锁定
               </Button>
             ) : null}
-            <Button size="small" icon={<IconRefresh />} loading={loading} onClick={() => load()}>
+            <Link to="/engineering?to=scan" className="engineering-link">扫小区</Link>
+            <Button size="small" icon={<IconRefresh />} loading={loading} onClick={() => void load().catch((error) => Toast.error(pickError(error)))}>
               刷新
             </Button>
           </Space>
@@ -209,12 +238,12 @@ const Settings: React.FC = () => {
                   <Tag color={TAG_COLOR.warning}>
                     {locks?.cell?.rat} {locks?.cell?.arfcn} / PCI {locks?.cell?.pci}
                   </Tag>
-                  <span className="status-box-sub">基带将持续尝试驻留此小区</span>
+                  <span className="status-box-sub">配置已回读 · {match === 'matched' ? '已驻留目标' : match === 'different' ? '仍驻留其他小区' : '未能确认驻留'}</span>
                 </div>
               ) : (
                 <div className="status-lock-info">
-                  <Tag color={TAG_COLOR.success}>未锁定 · 自动选网</Tag>
-                  <span className="status-box-sub">按信号质量自动切换小区</span>
+                  <Tag color={TAG_COLOR.neutral}>{locks?.cell ? '未设单小区锁' : '未读到锁定配置'}</Tag>
+                  <span className="status-box-sub">{serving.length ? serving.map(labelOf).join(' · ') : '未读到服务小区'}</span>
                 </div>
               )}
             </div>
@@ -222,7 +251,7 @@ const Settings: React.FC = () => {
 
           <div className="status-box">
             <div className="status-box-label">
-              生效 5G NR 频段
+              已配置 5G NR 频段
               <span className="kv-count">{locks?.current?.nr?.length ?? 0}</span>
             </div>
             <div className="band-chips band-chips--readonly">
@@ -231,13 +260,13 @@ const Settings: React.FC = () => {
                   n{band}
                 </span>
               ))}
-              {!locks?.current?.nr?.length ? <Typography.Text type="tertiary">自动 / 未读到</Typography.Text> : null}
+              {!locks?.current?.nr?.length ? <Typography.Text type="tertiary">尚未读到</Typography.Text> : null}
             </div>
           </div>
 
           <div className="status-box">
             <div className="status-box-label">
-              生效 4G LTE 频段
+              已配置 4G LTE 频段
               <span className="kv-count">{locks?.current?.lte?.length ?? 0}</span>
             </div>
             <div className="band-chips band-chips--readonly">
@@ -246,7 +275,7 @@ const Settings: React.FC = () => {
                   B{band}
                 </span>
               ))}
-              {!locks?.current?.lte?.length ? <Typography.Text type="tertiary">自动 / 未读到</Typography.Text> : null}
+              {!locks?.current?.lte?.length ? <Typography.Text type="tertiary">尚未读到</Typography.Text> : null}
             </div>
           </div>
         </div>
@@ -394,7 +423,7 @@ const Settings: React.FC = () => {
                           pci: String(pickedOne.pci),
                           confirm: true,
                         }),
-                      `已锁定到 ${labelOf(pickedOne)}`,
+                      `配置已回读：${labelOf(pickedOne)}；请看实际驻留`,
                     );
                   }}
                 >
@@ -413,7 +442,7 @@ const Settings: React.FC = () => {
                           cells: picked.map((item) => `${item.rat}:${item.arfcn}:${item.pci}`).join(','),
                           confirm: true,
                         }),
-                      `已提交 ${picked.length} 个小区作为白名单`,
+                      `基带已接受白名单，无法回读列表；请看实际驻留`,
                     )
                   }
                 >
@@ -432,7 +461,7 @@ const Settings: React.FC = () => {
             />
           ) : null}
 
-          <div className="manual-entry-box">
+          <div className="manual-entry-box" id="manual-cell" ref={manualEntry}>
             <div className="manual-row">
               <Field label="制式">
                 <div className="segmented-control" role="radiogroup" aria-label="选择制式">
@@ -495,10 +524,10 @@ const Settings: React.FC = () => {
                   <span className="candidate-lock">
                     {lockedHere ? (
                       <Tag color={TAG_COLOR.warning} size="small">
-                        已锁定
+                        锁定目标
                       </Tag>
                     ) : null}
-                    {!lockedHere && item.cell && item.cell !== '0' && item.cell === servingCell ? (
+                    {lockMatch(item, serving) === 'matched' ? (
                       <Tag color={TAG_COLOR.success} size="small">
                         驻留中
                       </Tag>

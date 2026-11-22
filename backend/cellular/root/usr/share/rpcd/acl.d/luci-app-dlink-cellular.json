@@ -17,7 +17,7 @@
     }
   },
   "luci-app-dlink-cellular-private": {
-    "description": "Read cellular SMS and change radio locks or send SMS",
+    "description": "Administer cellular SMS, diagnostics, and radio settings",
     "read": {
       "ubus": {
         "dlink-cellular": [
@@ -25,7 +25,16 @@
           "sms_read",
           "diag",
           "diag_checks",
-          "capture_status"
+          "capture_status",
+          "engineering_info",
+          "at_query",
+          "mimo_info",
+          "sim_status",
+          "scan_status",
+          "events_sms",
+          "beam_info",
+          "radio_policy",
+          "sim_protection"
         ]
       }
     },
@@ -38,9 +47,18 @@
           "cell_list_set",
           "cell_list_clear",
           "sms_send",
+          "sms_delete",
           "capture_start",
           "capture_stop",
-          "wan_redial"
+          "wan_redial",
+          "mimo_set",
+          "scan_start",
+          "scan_stop",
+          "wifi_power_set",
+          "radio_policy_set",
+          "sim_action",
+          "wifi_flag_set",
+          "wan_auto_set"
         ]
       }
     }
@@ -71,6 +89,16 @@
           "open",
           "pulse",
           "close"
+        ]
+      }
+    }
+  },
+  "rg620-at-console": {
+    "description": "Submit custom modem AT commands",
+    "write": {
+      "ubus": {
+        "dlink-cellular": [
+          "at_send"
         ]
       }
     }

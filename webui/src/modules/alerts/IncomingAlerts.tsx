@@ -3,6 +3,7 @@ import { Button, Notification, Toast } from '@douyinfe/semi-ui';
 import { IconComment, IconPhone } from '@douyinfe/semi-icons';
 import { useNavigate } from 'react-router-dom';
 import { ubus } from '@/services/deviceUbus';
+import { useSmsEvents } from '@/modules/cellular/stream';
 import { decodeDeliver, mergeParts, readableTime, type InboxMessage } from '@/modules/sms/decode';
 
 /** 来电响铃 / 呼叫等待。direction 1 是来电，与语音页 AT+CLCC 的取值一致。 */
@@ -23,6 +24,11 @@ const IncomingAlerts: React.FC = () => {
   const navigate = useNavigate();
   const navigateRef = useRef(navigate);
   navigateRef.current = navigate;
+  const { version, live } = useSmsEvents();
+  const liveRef = useRef(live);
+  liveRef.current = live;
+  const pollSmsRef = useRef<() => void>(() => {});
+  const lastPush = useRef<number | null>(null);
 
   useEffect(() => {
     let stopped = false;
@@ -32,6 +38,8 @@ const IncomingAlerts: React.FC = () => {
     let readingCalls = false;
     let knownSms: Set<number> | null = null;
     let readingSms = false;
+    let pendingSms = false;
+    let lastSmsRead = 0;
 
     const openSms = (id: string) => {
       smsNotices.delete(id);
@@ -160,12 +168,14 @@ const IncomingAlerts: React.FC = () => {
       }
     };
 
-    const pollSms = async () => {
-      if (readingSms || stopped) return;
+    const pollSms = async (fromPush = false) => {
+      if (stopped) return;
+      if (readingSms) { if (fromPush) pendingSms = true; return; }
       readingSms = true;
       try {
         const summary = await ubus<Inbox>('dlink-cellular', 'sms_list');
         if (stopped || summary?.ok !== true || !Array.isArray(summary.indexes)) return;
+        lastSmsRead = Date.now();
         const indexes = summary.indexes || [];
         if (!knownSms) {
           knownSms = new Set(indexes);
@@ -188,27 +198,39 @@ const IncomingAlerts: React.FC = () => {
             /* 单条读失败不阻断其余新短信 */
           }
         }
+        if (fresh.some((index) => !knownSms?.has(index))) lastSmsRead = 0;
         if (!stopped) showSms(mergeParts(decoded));
       } catch {
         /* 下一轮再读 */
       } finally {
         readingSms = false;
+        if (pendingSms) { pendingSms = false; void pollSms(); }
       }
     };
 
     void pollCalls();
     void pollSms();
     const callTimer = window.setInterval(() => void pollCalls(), CALL_POLL_MS);
-    const smsTimer = window.setInterval(() => void pollSms(), SMS_POLL_MS);
+    pollSmsRef.current = () => void pollSms(true);
+    const smsTimer = window.setInterval(() => {
+      if (!liveRef.current || Date.now() - lastSmsRead > 48_000) void pollSms();
+    }, SMS_POLL_MS);
 
     return () => {
       stopped = true;
+      pollSmsRef.current = () => {};
       window.clearInterval(callTimer);
       window.clearInterval(smsTimer);
       ringing.forEach((_, id) => Notification.close(noticeId('call', id)));
       smsNotices.forEach((id) => Notification.close(id));
     };
   }, []);
+
+  useEffect(() => {
+    if (version == null || version === lastPush.current) return;
+    lastPush.current = version;
+    pollSmsRef.current();
+  }, [version]);
 
   return null;
 };

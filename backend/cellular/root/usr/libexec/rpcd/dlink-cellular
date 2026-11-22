@@ -2,7 +2,7 @@
 
 if [ "$1" = list ]; then
 	cat <<'JSON'
-{"overview":{},"summary":{},"qos":{"rat":""},"locks":{},"access":{},"diag":{},"diag_checks":{},"voice_status":{},"voice_dial":{"number":"","confirm":true},"voice_answer":{"id":"","confirm":true,"ringing_only":true,"peer":""},"voice_hangup":{"id":"","confirm":true,"ringing_only":true,"peer":""},"voice_dtmf":{"id":"","key":"","confirm":true},"capture_status":{},"capture_start":{"seconds":0,"confirm":true},"capture_stop":{},"wan_redial":{"confirm":true},"band_set":{"rat":"", "bands":"", "confirm":true},"cell_set":{"rat":"", "arfcn":"", "pci":"", "confirm":true},"cell_clear":{"confirm":true},"cell_list_set":{"cells":"", "confirm":true},"cell_list_clear":{"confirm":true},"sms_list":{},"sms_read":{"index":0},"sms_send":{"to":"", "body":"", "confirm":true}}
+{"overview":{},"summary":{},"qos":{"rat":"","contexts":true},"locks":{},"access":{},"diag":{},"diag_checks":{},"voice_status":{},"voice_dial":{"number":"","confirm":true},"voice_answer":{"id":"","confirm":true,"ringing_only":true,"peer":""},"voice_hangup":{"id":"","confirm":true,"ringing_only":true,"peer":""},"voice_dtmf":{"id":"","key":"","confirm":true},"capture_status":{},"capture_start":{"seconds":0,"confirm":true},"capture_stop":{},"wan_redial":{"confirm":true},"band_set":{"rat":"", "bands":"", "confirm":true},"cell_set":{"rat":"", "arfcn":"", "pci":"", "confirm":true},"cell_clear":{"confirm":true},"cell_list_set":{"cells":"", "confirm":true},"cell_list_clear":{"confirm":true},"sms_list":{},"sms_read":{"index":0},"sms_send":{"to":"", "body":"", "confirm":true},"sms_delete":{"index":0,"pdu":"","records":[],"confirm":true},"engineering_info":{},"at_query":{"command":""},"at_send":{"command":"","confirm":true},"mimo_info":{},"sim_status":{},"mimo_set":{"rat":"","enabled":true,"confirm":true},"wifi_power_set":{"radio":"","percent":0,"expected":0,"confirm":true},"scan_status":{},"scan_start":{"rat":"","scope":"","confirm":true},"scan_stop":{"confirm":true},"wan_auto_set":{"enabled":true,"expected":true,"confirm":true},"beam_info":{},"sim_protection":{},"radio_policy":{},"radio_policy_set":{"setting":"","value":0,"expected":0,"confirm":true},"sim_action":{"action":"","secret":"","new_pin":"","remaining":0,"confirm":true},"wifi_flag_set":{"radio":"","flag":"","enabled":true,"expected":true,"confirm":true},"events_sms":{}}
 JSON
 	exit 0
 fi
@@ -11,21 +11,121 @@ error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
 protected() {
 	awk -F: '$1=="root" && $2!="" && $2 !~ /^[!*]/ {n=1} END {exit !n}' /etc/shadow
 }
-run() {
+run() { run_helper /usr/libexec/dlink-cellular "$@"; }
+run_helper() {
 	local result
-	if result="$(timeout 20 /usr/libexec/dlink-cellular "$@" 2>/dev/null)" && [ -n "$result" ]; then
+	if result="$(timeout 20 "$@" 2>/dev/null)" && [ -n "$result" ]; then
 		printf '%s\n' "$result"
 	else
 		error timeout
 	fi
 }
+sms_record() {
+	local itype ptype
+	json_get_type itype index
+	json_get_type ptype pdu
+	[ "$itype:$ptype" = int:string ] || return 1
+	json_get_var index index
+	json_get_var pdu pdu
+	case "$index" in ''|*[!0-9]*) return 1;; esac
+	case "$pdu" in ''|*[!0-9A-Fa-f]*) return 1;; esac
+}
+sms_group_input() {
+	local keys key type index pdu
+	json_select records || return 1
+	json_get_keys keys || return 1
+	set -- $keys
+	[ "$#" -ge 1 ] && [ "$#" -le 60 ] || return 1
+	printf '%s\n' "$#"
+	for key in "$@"; do
+		json_get_type type "$key"
+		[ "$type" = object ] && json_select "$key" && sms_record || return 1
+		printf '%s %s\n' "$index" "$pdu"
+		json_select .. || return 1
+	done
+}
 [ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = dlink,dwr-be7200g ] || { error board; exit 0; }
 
 case "$2" in
 	access)
-		if protected; then echo '{"ok":true,"protected":true}'; else echo '{"ok":true,"protected":false}'; fi
+		if protected; then
+			can_delete=false
+			[ ! -x /usr/libexec/dlink-sms-delete ] || can_delete=true
+			printf '{"ok":true,"protected":true,"sms_delete":%s,"sms_delete_group":%s}\n' "$can_delete" "$can_delete"
+		else
+			echo '{"ok":true,"protected":false,"sms_delete":false,"sms_delete_group":false}'
+		fi
 		;;
 	overview|summary|locks) run "$2";;
+	at_send)
+        protected || { error password_required; exit 0; }
+        run_helper /usr/libexec/dlink-at-console;;
+	beam_info|sim_protection|radio_policy|radio_policy_set|sim_action)
+        protected || { error password_required; exit 0; }
+        if [ "$2" = sim_action ]; then
+            # The vendor RIL daemon can log credentials in debug mode. Fail closed.
+            config="$(uci -q show system)" || { error sim_debug; exit 0; }
+            if printf '%s\n' "$config" | grep -E '\.quectel_log_start=' | grep -qvE "='?0'?$"; then error sim_debug; exit 0; fi
+        fi
+        # Read JSON from stdin in the helper. Never put a PIN/PUK in argv or the environment.
+        run_helper /usr/libexec/dlink-controls "$2";;
+	engineering_info|mimo_info|sim_status|scan_status|events_sms)
+		protected || { error password_required; exit 0; }
+		case "$2" in
+			engineering_info) /usr/libexec/dlink-cellular-engineering info;;
+			scan_status) /usr/libexec/dlink-cellular-scan-control status;;
+			events_sms)
+				# ACL marker for the same-origin event stream; no SMS data in the RPC.
+				echo '{"ok":true}';;
+			*) run "$2";;
+		esac
+		;;
+	at_query|mimo_set|wan_auto_set|wifi_flag_set|wifi_power_set|scan_start|scan_stop)
+		protected || { error password_required; exit 0; }
+		. /usr/share/libubox/jshn.sh
+		input="$(head -c 513)"
+		[ "${#input}" -le 512 ] || { error input; exit 0; }
+		case "$input" in *'\u0000'*) error input; exit 0;; esac
+		json_load "$input" || { error input; exit 0; }
+		if [ "$2" != at_query ]; then
+			json_get_var confirmed confirm
+			json_get_type ctype confirm
+			[ "$ctype:$confirmed" = boolean:1 ] || { error confirm; exit 0; }
+		fi
+		case "$2" in
+			at_query)
+				json_get_type type command; [ "$type" = string ] || { error input; exit 0; }
+				json_get_var command command
+				/usr/libexec/dlink-cellular-engineering at "$command";;
+			mimo_set)
+				json_get_type type enabled; [ "$type" = boolean ] || { error input; exit 0; }
+				json_get_vars rat enabled
+				case "$rat" in LTE|NR) run mimo_set "$rat" "$enabled";; *) error input;; esac;;
+            wan_auto_set)
+                json_get_type et enabled; json_get_type xt expected
+                [ "$et:$xt" = boolean:boolean ] || { error input; exit 0; }
+                json_get_vars enabled expected
+                /usr/libexec/dlink-cellular-engineering wan_auto "$enabled" "$expected";;
+            wifi_flag_set)
+                json_get_type et enabled; json_get_type xt expected
+                [ "$et:$xt" = boolean:boolean ] || { error input; exit 0; }
+                json_get_vars radio flag enabled expected
+                /usr/libexec/dlink-cellular-engineering wifi_flag "$radio" "$flag" "$enabled" "$expected";;
+			wifi_power_set)
+				json_get_type type percent; json_get_type base expected
+				[ "$type:$base" = int:int ] || { error input; exit 0; }
+				json_get_vars radio percent expected
+				case "$radio" in 2g|5g) /usr/libexec/dlink-cellular-engineering wifi_set "$radio" "$percent" "$expected";; *) error input;; esac;;
+			scan_start)
+				json_get_vars rat scope
+				case "$rat:$scope" in
+					LTE:network|NR:network|both:network|LTE:all|NR:all|both:all)
+						/usr/libexec/dlink-cellular-scan-control start "$rat" "$scope";;
+					*) error input;;
+				esac;;
+			scan_stop) /usr/libexec/dlink-cellular-scan-control stop;;
+		esac
+		;;
 	voice_status)
 		protected || { error password_required; exit 0; }
 		/usr/libexec/dlink-cellular-voice status
@@ -46,9 +146,14 @@ case "$2" in
 		. /usr/share/libubox/jshn.sh
 		json_load "$(cat)" || { error input; exit 0; }
 		json_get_var rat rat
-		/usr/libexec/dlink-cellular-qos "$rat"
+		contexts=0
+		if json_get_type context_type contexts; then
+			[ "$context_type" = boolean ] || { error input; exit 0; }
+			json_get_var contexts contexts
+		fi
+		/usr/libexec/dlink-cellular-qos "$rat" "$contexts"
 		;;
-	sms_list|sms_read|sms_send|band_set|cell_set|cell_clear|cell_list_set|cell_list_clear|capture_start|wan_redial|voice_dial|voice_answer|voice_hangup|voice_dtmf)
+	sms_list|sms_read|sms_send|sms_delete|band_set|cell_set|cell_clear|cell_list_set|cell_list_clear|capture_start|wan_redial|voice_dial|voice_answer|voice_hangup|voice_dtmf)
 		protected || { error password_required; exit 0; }
 		. /usr/share/libubox/jshn.sh
 		input="$(cat)"
@@ -89,6 +194,18 @@ case "$2" in
 						[ "$cells" != clear ] || { error input; exit 0; }
 						run cell_list "$cells";;
 					cell_list_clear) run cell_list clear;;
+					sms_delete)
+						[ -x /usr/libexec/dlink-sms-delete ] || { error unsupported; exit 0; }
+						if json_get_type records_type records; then
+							[ "$records_type" = array ] || { error input; exit 0; }
+							if json_get_type mixed index || json_get_type mixed pdu; then error input; exit 0; fi
+							payload="$(sms_group_input)" || { error input; exit 0; }
+							printf '%s\n' "$payload" | run_helper /usr/libexec/dlink-sms-delete --group
+						else
+							sms_record || { error input; exit 0; }
+							printf '%s\n' "$pdu" | run_helper /usr/libexec/dlink-sms-delete "$index"
+						fi
+						;;
 					sms_send)
 						json_get_var to to; json_get_var body body
 						case "$to" in *[!0-9+]*) error input; exit 0;; esac

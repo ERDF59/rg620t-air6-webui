@@ -1,0 +1,52 @@
+#!/bin/sh
+
+dir=/tmp/dlink-cellular-scan
+init=/etc/init.d/dlink-cellular-scan
+error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
+running() {
+	[ "$(ubus -t 2 call service list '{"name":"dlink-cellular-scan"}' 2>/dev/null |
+	      jsonfilter -e '@["dlink-cellular-scan"].instances.scan.running')" = true ]
+}
+report() {
+	state="$(cat "$dir/status.json" 2>/dev/null)"
+	if [ -z "$state" ]; then
+		echo '{"ok":true,"state":"idle","cells":[]}'
+		return
+	fi
+	case "$(printf '%s\n' "$state" | jsonfilter -e '@.state')" in
+		queued|running|stopping)
+			if ! running; then
+				echo '{"ok":true,"state":"stop_unconfirmed","cells":[]}'
+			elif [ -f "$dir/stop" ]; then
+				echo '{"ok":true,"state":"stopping","cells":[]}'
+			else printf '%s\n' "$state"; fi;;
+		*) printf '%s\n' "$state";;
+	esac
+}
+[ -x /usr/libexec/dlink-cell-scan ] && [ -x "$init" ] || { error unsupported; exit 0; }
+umask 077
+[ ! -L "$dir" ] && mkdir -p "$dir" || { error scan_start; exit 0; }
+exec 9>/var/lock/dlink-cellular-scan-admin.lock || { error busy; exit 0; }
+flock -n 9 || { error busy; exit 0; }
+case "$1" in
+	status) report;;
+	start)
+		running && { error scan_running; exit 0; }
+		# Do not take over a live phone call or a modem command.
+		if command -v mipc_wan_cli >/dev/null 2>&1; then
+			calls="$(timeout 4 /usr/libexec/dlink-cellular-voice status)"
+			[ "$(printf '%s\n' "$calls" | jsonfilter -e '@.ok')" = true ] || { error busy; exit 0; }
+			[ -z "$(printf '%s\n' "$calls" | jsonfilter -e '@.calls[0].id')" ] || { error scan_call; exit 0; }
+		fi
+		rm -f "$dir/stop"
+		printf '{"ok":true,"state":"queued","cells":[]}\n' > "$dir/status.new" &&
+			mv -f "$dir/status.new" "$dir/status.json" || { error scan_start; exit 0; }
+		"$init" start "$2" "$3" >/dev/null 2>&1 ||
+			{ rm -f "$dir/status.json"; error scan_start; exit 0; }
+		echo '{"ok":true,"state":"queued","cells":[]}';;
+	stop)
+		if running; then : > "$dir/stop" || { error scan_stop; exit 0; }
+			echo '{"ok":true,"state":"stopping","cells":[]}'
+		else report; fi;;
+	*) error input;;
+esac

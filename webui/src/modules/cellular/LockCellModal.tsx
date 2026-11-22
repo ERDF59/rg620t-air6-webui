@@ -1,14 +1,14 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Banner, Button, Modal, Tag, Toast, Typography } from '@douyinfe/semi-ui';
 import { ubus } from '@/services/deviceUbus';
-import { type Cell, cellLabel } from './types';
+import { type Cell, cellKey, cellLabel } from './types';
 import { TAG_COLOR, ratTagColor } from '@/ui/tokens';
 
 const ERRORS: Record<string, string> = {
   input: '输入不合法，检查 ARFCN 与 PCI 的范围。',
   cell_read: '基带读不到当前锁定状态。',
   cell_write: '基带拒绝了单小区锁定请求。',
-  readback: '写入后回读不一致，锁定未生效。',
+  readback: '写入后配置回读不一致，请刷新确认当前配置。',
   busy: '上一条指令还在执行，稍后再试。',
   ril_init: '蜂窝接口初始化失败。',
 };
@@ -18,68 +18,70 @@ const pickError = (error: unknown) => {
   return ERRORS[text] || text || '操作失败';
 };
 
-const LockCellModal: React.FC<{
-  cell: Cell | null;
-  serving?: boolean;
-  onClose: () => void;
-  onDone: () => void;
-}> = ({ cell, serving, onClose, onDone }) => {
-  const [busy, setBusy] = useState('');
-  const visible = Boolean(cell);
+type Config = { opt: number; rat: string; arfcn: number; pci: number; mode: number };
+type Props = { cell: Cell; serving?: boolean; onClose: () => void; onDone: () => void };
+async function readConfig(): Promise<Config> {
+  const r = await ubus<{ok?: boolean; cell?: Config | null; error?: string}>('dlink-cellular', 'locks');
+  const c = r.cell;
+  if (!r.ok || !c || ![0,1,2].includes(c.opt) ||
+    (c.opt !== 0 && (!c.rat || !Number.isInteger(c.arfcn) || c.arfcn <= 0 ||
+      (c.opt === 1 && (!Number.isInteger(c.pci) || c.pci < 0))))) throw Error(r.error || 'cell_read');
+  return c;
+}
+const sameConfig = (a: Config, b: Config) => a.opt === b.opt &&
+  (!a.opt || (a.mode === b.mode && a.rat === b.rat && a.arfcn === b.arfcn && (a.opt === 2 || a.pci === b.pci)));
 
-  const lock = async (mode: 'single') => {
-    if (!cell) return;
-    setBusy(mode);
+const TargetDialog: React.FC<Props> = ({ cell, serving, onClose, onDone }) => {
+  const [config,setConfig] = useState<Config | null>(null);
+  const [note,setNote] = useState('');
+  const [busy,setBusy] = useState(false);
+  const [attempt,retry] = useState(0);
+  const submitting = useRef(false);
+  useEffect(() => {
+    let active = true;
+    readConfig().then(c => { if(active)setConfig(c); }, e => { if(active)setNote(pickError(e)); });
+    return () => {active=false;};
+  }, [attempt]);
+
+  const unlock = config?.opt === 1 && cellKey(config) === cellKey(cell);
+  const replace = !!config?.opt && !unlock;
+  const action = unlock ? '解除锁定' : replace ? '改锁到此小区' : '确认锁定';
+  const submit = async () => {
+    if (!config || submitting.current) return;
+    submitting.current = true;
+    setBusy(true);
+    let fresh: Config | null = null;
     try {
-      await ubus('dlink-cellular', 'cell_set', {
-        rat: cell.rat,
-        arfcn: String(cell.arfcn),
-        pci: String(cell.pci),
-        confirm: true,
+      fresh = await readConfig();
+      if (!sameConfig(config, fresh)) {
+        setConfig(fresh); setNote('锁定配置已改变，请核对后再操作。'); return;
+      }
+      if (unlock) await ubus('dlink-cellular','cell_clear',{confirm:true});
+      else await ubus('dlink-cellular','cell_set',{
+        rat:cell.rat, arfcn:String(cell.arfcn), pci:String(cell.pci), confirm:true,
       });
-      Toast.success(`已锁定到 ${cellLabel(cell)}`);
+      Toast.success(unlock ? '已解除该小区的单小区锁' : `配置已回读：${cellLabel(cell)}；请看实际驻留`);
       onDone();
-    } catch (error) {
-      Toast.error(pickError(error));
-    } finally {
-      setBusy('');
-    }
+    } catch (e) {
+      setConfig(null); setNote(pickError(e));
+    } finally { submitting.current=false; setBusy(false); }
   };
-
-  const clear = async () => {
-    setBusy('clear');
-    try {
-      await ubus('dlink-cellular', 'cell_clear', { confirm: true });
-      await ubus('dlink-cellular', 'cell_list_clear', { confirm: true });
-      Toast.success('已解除小区锁定');
-      onDone();
-    } catch (error) {
-      Toast.error(pickError(error));
-    } finally {
-      setBusy('');
-    }
-  };
-
+  const target = config?.opt === 2 ? `${config.rat} 频点 ${config.arfcn}` : config && cellLabel(config);
   return (
     <Modal
-      title="锁定目标小区"
-      visible={visible}
-      onCancel={onClose}
-      width={460}
-      closeOnEsc
+      title={unlock ? '解除此小区锁定' : replace ? '更换锁定目标' : '锁定目标小区'}
+      visible
+      onCancel={() => {if (!submitting.current) onClose();}}
+      width="min(460px, calc(100vw - 32px))"
       footer={
         <div className="lock-modal-footer">
-          <Button onClick={onClose}>取消</Button>
-          <Button type="danger" loading={busy === 'clear'} onClick={clear}>
-            解除锁定
-          </Button>
-          <Button theme="solid" type="primary" loading={busy === 'single'} onClick={() => lock('single')}>
-            确认锁定
-          </Button>
+          <Button aria-label="取消" disabled={busy} onClick={onClose}>取消</Button>
+          {config ? <Button theme="solid" type={unlock ? 'danger' : 'primary'} loading={busy} onClick={submit}>
+            {action}
+          </Button> : note ? <Button onClick={()=>{setNote('');retry(n=>n+1);}}>重新读取</Button> : null}
         </div>
       }
     >
-      {cell ? (
         <div className="lock-modal">
           <div className="lock-modal-target">
             <Tag color={ratTagColor(cell.rat)}>{cell.rat}</Tag>
@@ -92,7 +94,7 @@ const LockCellModal: React.FC<{
           <div className="lock-modal-metrics">
             <div>
               <span>RSRP</span>
-              <b>{cell.rsrp} dBm</b>
+              <b>{cell.rsrp != null ? `${cell.rsrp} dBm` : '—'}</b>
             </div>
             <div>
               <span>RSRQ</span>
@@ -104,27 +106,20 @@ const LockCellModal: React.FC<{
             </div>
           </div>
 
-          {serving ? (
-            <Banner
-              type="info"
-              closeIcon={null}
-              description="该小区即当前驻留小区，锁定后不会改变连接；如需限制多小区范围，建议在「锁频锁小区」页使用白名单模式。"
-            />
-          ) : (
-            <Banner
-              type="warning"
-              closeIcon={null}
-              description="锁定到非驻留小区会触发小区重选，蜂窝数据连接可能短暂中断。"
-            />
-          )}
-
-          <Typography.Text type="tertiary" size="small">
-            锁定后基带将仅尝试驻留该小区，若信号覆盖消失可能脱网。
-          </Typography.Text>
+          {note && <Banner type="warning" closeIcon={null} description={note} />}
+          {config ? <>
+            {unlock ? <Banner type="info" closeIcon={null} description="此小区是当前的单小区锁定目标。解除后，基带可重新选择小区。" />
+            : <Banner type={replace || !serving ? 'warning' : 'info'} closeIcon={null}
+                description={replace ? `现有锁定：${target}。改锁将替换这项配置，蜂窝连接可能短暂中断。`
+                  : serving ? '这是当前驻留的小区，尚未设为单小区锁定目标。' : '锁定此小区可能触发重选，蜂窝连接可能短暂中断。'} />}
+            {!unlock && <Typography.Text type="tertiary" size="small">锁定后，若该小区失去覆盖，设备可能脱网。</Typography.Text>}
+          </> : !note && <Typography.Text type="tertiary" size="small">正在读取锁定配置…</Typography.Text>}
         </div>
-      ) : null}
     </Modal>
   );
 };
+
+const LockCellModal = ({cell,...props}: Omit<Props,'cell'> & {cell:Cell|null}) =>
+  cell ? <TargetDialog key={cellKey(cell)} cell={cell} {...props}/> : null;
 
 export default LockCellModal;

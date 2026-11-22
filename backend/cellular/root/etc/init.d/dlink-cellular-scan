@@ -1,0 +1,14 @@
+#!/bin/sh /etc/rc.common
+USE_PROCD=1
+
+start_service() {
+	case "$1:$2" in LTE:network|NR:network|both:network|LTE:all|NR:all|both:all) ;;
+		*) return 1;;
+	esac
+	[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = dlink,dwr-be7200g ] || return 1
+	procd_open_instance scan
+	# Watchdog for a wedged vendor call; the worker has its own shorter SDK/abort deadlines.
+	procd_set_param command /usr/bin/timeout -k 5 45 /usr/libexec/dlink-cell-scan "$1" "$2"
+	procd_set_param term_timeout 6
+	procd_close_instance
+}
