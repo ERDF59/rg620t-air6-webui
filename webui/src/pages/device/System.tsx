@@ -1,16 +1,15 @@
-import { Link } from 'react-router-dom';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Tag, Toast, Typography } from '@douyinfe/semi-ui';
 import { IconActivity, IconClock, IconServer, IconUserGroup, IconWifi } from '@douyinfe/semi-icons';
 import { Kv, Metric, PageCard, RefreshBtn, SectionHeader, TwoCol } from '@/ui/widgets';
 import { QualityBar } from '@/ui/charts';
 import { ubus } from '@/services/deviceUbus';
-import deployInfo from '@/modules/device-build.json';
+import ModemIdentity from '@/modules/cellular/ModemIdentity';
 import { TAG_COLOR, type Tone } from '@/ui/tokens';
 
 type Release = { distribution?: string; version?: string; revision?: string; description?: string };
 type Board = { hostname?: string; model?: string; system?: string; kernel?: string; release?: Release };
-type Info = { uptime?: number; memory?: { total?: number; free?: number }; load?: number[] };
+type Info = { uptime?: number; memory?: { total?: number; free?: number; available?: number }; load?: number[] };
 const bands = { ra0: '2.4 GHz', rai0: '5 GHz' } as const;
 type Interface = keyof typeof bands;
 type Radio = {
@@ -58,7 +57,7 @@ const duration = (seconds?: number) => {
   return `${m} 分`;
 };
 
-const gb = (bytes?: number) => (bytes ? `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB` : '—');
+const memorySize = (bytes?: number) => bytes != null && Number.isFinite(bytes) && bytes >= 0 ? `${(bytes / 2 ** 20).toFixed(1)} MiB` : '—';
 
 /** 占用率（越高越糟）：>85 危险 / >70 警告 */
 const usageTone = (percent: number | null): Tone => {
@@ -89,8 +88,12 @@ const System: React.FC = () => {
   }, [refresh]);
 
   const mem = info.memory;
-  const usedPercent = mem?.total && mem.free != null ? Math.round((1 - mem.free / mem.total) * 100) : null;
-  const usedBytes = mem?.total && mem.free != null ? mem.total - mem.free : undefined;
+  // free 不含可回收的页缓存，会把占用夸大；有 available 时以它为准。
+  const spare = mem?.available ?? mem?.free;
+  const hasFreeOnly = mem?.available == null && mem?.free != null;
+  const total = mem?.total;
+  const usedBytes = total != null && total > 0 && spare != null && spare >= 0 && spare <= total ? total - spare : undefined;
+  const usedPercent = usedBytes != null && mem?.total ? Math.round(usedBytes / mem.total * 100) : null;
   const load = info.load?.map((n) => (n / 65535).toFixed(2)).join(' / ');
   const stations = cpe.ra0?.stations != null && cpe.rai0?.stations != null ? cpe.ra0.stations + cpe.rai0.stations : '—';
 
@@ -120,11 +123,11 @@ const System: React.FC = () => {
           tile
           size="md"
           icon={<IconServer size="small" />}
-          label="内存占用"
+          label={hasFreeOnly ? '非空闲内存' : '内存占用'}
           value={usedPercent == null ? '—' : usedPercent}
           unit={usedPercent != null ? '%' : undefined}
           tone={usageTone(usedPercent) === 'success' ? undefined : usageTone(usedPercent)}
-          hint={`${gb(usedBytes)} / ${gb(mem?.total)}`}
+          hint={`${memorySize(usedBytes)} / ${memorySize(mem?.total)}`}
           className="kpi-card"
         />
         <Metric
@@ -138,7 +141,7 @@ const System: React.FC = () => {
         />
       </div>
 
-      <TwoCol>
+      <ModemIdentity beside={
         <PageCard
           title="系统与固件"
           hint="主机硬件、发行版与内存使用率"
@@ -156,7 +159,7 @@ const System: React.FC = () => {
           />
           <div className="card-divider" />
           <QualityBar
-            label="内存使用率"
+            label={hasFreeOnly ? '非空闲内存占比' : '内存使用率'}
             value={usedPercent}
             domain={[0, 100]}
             unit="%"
@@ -164,31 +167,10 @@ const System: React.FC = () => {
             tone={usageTone(usedPercent)}
           />
           <Typography.Text type="tertiary" size="small" className="hint-line hint-line--tight">
-            已用 {gb(usedBytes)} / 总计 {gb(mem?.total)}
+            {hasFreeOnly ? '非空闲（含缓存）' : '已用'} {memorySize(usedBytes)} / 总计 {memorySize(mem?.total)}
           </Typography.Text>
         </PageCard>
-
-        <PageCard
-          title="蜂窝模组"
-          hint="安装此版界面时从设备读取"
-          extra={<Tag size="small" color={TAG_COLOR.success}>部署时核对</Tag>}
-        >
-          <Kv
-            layout="rows"
-            items={[
-              { label: '模组型号', value: 'Quectel RG620T' },
-              { label: '基带版本', value: deployInfo.firmware },
-              { label: '部署时系统槽位', value: deployInfo.systemSlot },
-            ]}
-          />
-          <div className="card-divider" />
-          <Link to="/engineering" className="engineering-link">查看 SIM 与温度、查询基带</Link>
-          <br />
-          <Typography.Text type="tertiary" size="small">
-            基带版本来自 AT+CGMR；后续刷机或切槽后，这份部署记录不会自动变化。
-          </Typography.Text>
-        </PageCard>
-      </TwoCol>
+      } />
 
       <section className="page-section">
         <SectionHeader title="无线射频" desc="主无线接口当前的信道、功率与关联终端" icon={<IconWifi />}
