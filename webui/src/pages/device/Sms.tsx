@@ -13,9 +13,9 @@ import {
   Toast,
   Typography,
 } from '@douyinfe/semi-ui';
-import { IconDelete, IconPlus, IconRefresh, IconSearch, IconSend } from '@douyinfe/semi-icons';
+import { IconChevronLeft, IconDelete, IconPlus, IconRefresh, IconSearch, IconSend } from '@douyinfe/semi-icons';
 import { getSession, ubus } from '@/services/deviceUbus';
-import { useSmsEvents } from '@/modules/cellular/stream';
+import { SMS_POLL_CHANGE_EVENT, useSmsEvents } from '@/modules/cellular/stream';
 import { decodeDeliver, mergeParts, readableTime, type InboxMessage } from '@/modules/sms/decode';
 import { TAG_COLOR } from '@/ui/tokens';
 import SmsServices from '@/modules/cellular/SmsServices';
@@ -82,9 +82,10 @@ const Sms: React.FC = () => {
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeTo, setComposeTo] = useState('');
   const [composeBody, setComposeBody] = useState('');
-  const endRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
   const { version } = useSmsEvents();
-  const seenVersion = useRef(version);
+  const [localRefresh, setLocalRefresh] = useState(0);
+  const seenRefresh = useRef({ version, localRefresh });
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -138,10 +139,24 @@ const Sms: React.FC = () => {
   }, [load]);
 
   useEffect(() => {
-    if (version == null || seenVersion.current === version || refreshing || deleting || selection !== null) return;
-    seenVersion.current = version;
+    const requestRefresh = () => {
+      if (document.visibilityState === 'visible') setLocalRefresh((key) => key + 1);
+    };
+    window.addEventListener(SMS_POLL_CHANGE_EVENT, requestRefresh);
+    document.addEventListener('visibilitychange', requestRefresh);
+    return () => {
+      window.removeEventListener(SMS_POLL_CHANGE_EVENT, requestRefresh);
+      document.removeEventListener('visibilitychange', requestRefresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    const seen = seenRefresh.current;
+    if (refreshing || deleting || sending || selection !== null) return;
+    if ((version == null || version === seen.version) && localRefresh === seen.localRefresh) return;
+    seenRefresh.current = { version: version ?? seen.version, localRefresh };
     void load();
-  }, [version, refreshing, deleting, selection, load]);
+  }, [version, localRefresh, refreshing, deleting, sending, selection, load]);
 
   useEffect(() => {
     if (import.meta.env.VITE_SMS_DELETE !== 'on') return;
@@ -173,11 +188,13 @@ const Sms: React.FC = () => {
     );
   }, [messages, query]);
 
-  const current = threads.find((thread) => thread.number === active) || threads[0];
+  const activeThread = threads.find((thread) => thread.number === active);
+  const current = activeThread ?? threads[0];
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: 'end' });
-  }, [current?.messages.length, active]);
+    const list = messagesRef.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }, [current?.messages.length, current?.number, active]);
 
   const send = async (to: string, body: string) => {
     if (!to.trim() || !body.trim()) {
@@ -311,7 +328,7 @@ const Sms: React.FC = () => {
         />
       ) : null}
 
-      <Layout className="sms-shell">
+      <Layout className={`sms-shell ${activeThread ? 'sms-shell--thread' : 'sms-shell--list'}`}>
         <Sider className="sms-contacts">
           <div className="sms-contacts-head">
             <Input
@@ -341,7 +358,12 @@ const Sms: React.FC = () => {
                     onClick={() => openThread(thread.number)}
                     role="button"
                     tabIndex={0}
-                    onKeyDown={(event) => event.key === 'Enter' && openThread(thread.number)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        openThread(thread.number);
+                      }
+                    }}
                   >
                     <span className="sms-avatar" aria-hidden="true">
                       {avatarLabel(thread.number)}
@@ -370,6 +392,14 @@ const Sms: React.FC = () => {
             <>
               <div className="sms-thread-head">
                 <div className="sms-thread-peer">
+                  <Button
+                    className="sms-thread-back"
+                    size="small"
+                    theme="borderless"
+                    icon={<IconChevronLeft aria-hidden />}
+                    aria-label="返回会话列表"
+                    onClick={() => { setActive(''); setSelection(null); }}
+                  />
                   <span className="sms-avatar sms-avatar--sm" aria-hidden="true">
                     {avatarLabel(current.number)}
                   </span>
@@ -414,7 +444,7 @@ const Sms: React.FC = () => {
                 </Space>
               </div>
 
-              <div className="sms-messages">
+              <div className="sms-messages" ref={messagesRef}>
                 {current.messages.map((message) => (
                   <div className="sms-message-row" key={message.index}>
                     <div className="sms-message-body">
@@ -454,7 +484,6 @@ const Sms: React.FC = () => {
                     )}
                   </div>
                 ))}
-                <div ref={endRef} />
               </div>
 
               <div className="sms-composer">
@@ -481,7 +510,7 @@ const Sms: React.FC = () => {
                 </Button>
               </div>
               <div className="sms-composer-hint">
-                <span>当前 {draft.length} 字 · 超过 70 个汉字将由模组自动拆分成长短信</span>
+                <span>{draft.length} 字 · 超过 70 个汉字由模组自动分片</span>
               </div>
             </>
           ) : (

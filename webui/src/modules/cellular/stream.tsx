@@ -128,6 +128,9 @@ export function useCellularStream(enabled: boolean) {
   return enabled ? { snapshot: network, status: networkStatus } : { snapshot: null, status: 'offline' as const };
 }
 
+/** An existing alert poll found new storage records while the SMS stream was unavailable. */
+export const SMS_POLL_CHANGE_EVENT = 'rg620:sms-poll-change';
+
 export function useSmsEvents() {
   const { smsVersion, smsLive } = useContext(Events);
   return { version: smsVersion, live: smsLive };

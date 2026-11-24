@@ -12,6 +12,10 @@ const two = '这条纳入批量删除（模拟）';
 const stale = '这个索引已复用（模拟）';
 const long = '这是合成长短信，用于检查分片删除。'.repeat(12);
 const pdu = (text, from = address) => new PDU.Deliver(from, text).getPartStrings();
+// Specify the address type: node-pdu's string constructor mistakes the "00" in 10086 for an international prefix.
+const shortCode = new PDU.utils.SCA(false);
+shortCode.setPhone('10086', false);
+shortCode.type.setType(0);
 const parts = pdu(long);
 assert.equal(parts.length, 4, 'long SMS fixture has four parts');
 const partIndexes = parts.map((_, i) => 10 + i);
@@ -21,13 +25,13 @@ const fixture = new Map([
   [8, pdu(stale)[0]],
   ...parts.map((part, i) => [partIndexes[i], i===1 ? '03912143'+part.slice(2) : part]),
   [30, '03912143'+parts[1].slice(2)], // same PDU in another physical slot, via alternate SMSC
-  [50, pdu(keep, '+12025550102')[0]],
+  [50, pdu(keep, shortCode)[0]],
 ]);
 const requests = [];
 let supportsDelete = true;
 let partialNextGroup = false;
 
-const dist = path.resolve(__dirname, '../dist');
+const dist = process.env.WEBUI_TEST_DIST || path.resolve(__dirname, '../dist');
 const contentType = { '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.html': 'text/html' };
 const server = http.createServer(async (req, res) => {
   if (req.url === '/ubus') {
@@ -36,7 +40,7 @@ const server = http.createServer(async (req, res) => {
     const { id, params: [session, object, method, params] } = JSON.parse(raw);
     let result = { ok: true };
     if (object === 'dlink-cellular') {
-      if (method === 'access') result = { ok: true, protected: true, sms_delete: supportsDelete, sms_delete_group: supportsDelete };
+      if (method === 'access') result = { ok: true, protected: true, sdk: true, sms_delete: supportsDelete, sms_delete_group: supportsDelete };
       if (method === 'sms_list') result = { ok: true, indexes: [...fixture.keys()], used: fixture.size, capacity: 80 };
       if (method === 'sms_read') result = { ok: true, pdu: fixture.get(params.index) };
       if (method === 'sms_delete') {
@@ -81,9 +85,45 @@ const server = http.createServer(async (req, res) => {
     await ctx.addInitScript(() => sessionStorage.setItem('rg620_ubus_session', 'fixture'));
     const page = await ctx.newPage();
     page.setDefaultTimeout(10000);
+    await page.clock.install();
+    const screenshots = process.env.SMS_TEST_ARTIFACTS;
+    await page.setViewportSize({ width: 320, height: 568 });
     await page.goto(origin + '/rg620/#/sms/center');
+    const shortThread = page.locator('.sms-contact').filter({ hasText: '10086' });
+    await shortThread.waitFor();
+    await page.getByRole('button', { name: '短信中心与 USSD' }).waitFor();
+    const back = page.getByRole('button', { name: '返回会话列表' });
+    assert.equal(await page.locator('.sms-thread').isVisible(), false, 'narrow screens open on the conversation list');
+    if (screenshots) await page.screenshot({ path: path.join(screenshots, 'sms-320-list.png'), animations: 'disabled' });
+    await shortThread.click();
+    await back.waitFor();
+    assert.equal(await page.locator('.sms-contacts').isVisible(), false);
+    assert.equal(await page.locator('.sms-thread-title').innerText(), '10086');
+    await page.locator('.sms-messages').getByText(keep, { exact: true }).waitFor();
+    await back.click();
+    await shortThread.waitFor();
     const thread = page.locator('.sms-contact').filter({ hasText: '12025550101' });
     await thread.click();
+    const composer = page.locator('.sms-composer textarea');
+    await composer.fill('这是一条未发送的测试草稿');
+    for (const [width, height] of [[320, 568], [375, 667]]) {
+      await page.setViewportSize({ width, height });
+      await page.waitForFunction(() => {
+        const input = document.querySelector('.sms-composer textarea');
+        const hint = document.querySelector('.sms-composer-hint');
+        const messages = document.querySelector('.sms-messages');
+        return input && hint && messages &&
+          getComputedStyle(input).fontSize === '16px' &&
+          hint.getBoundingClientRect().bottom <= innerHeight &&
+          messages.scrollHeight > messages.clientHeight &&
+          document.documentElement.scrollWidth <= innerWidth;
+      });
+      if (screenshots) await page.screenshot({ path: path.join(screenshots, `sms-${width}-thread.png`), animations: 'disabled' });
+    }
+    await composer.fill('');
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.locator('.sms-contacts').waitFor();
+    assert.equal(await back.count(), 0, 'desktop keeps the split view without a back button');
     const row = (text) => page.locator('.sms-message-row').filter({ hasText: text });
     const dialog = page.getByRole('dialog');
     const ok = () => dialog.getByRole('button', { name: '确认删除', exact: true }).click();
@@ -110,7 +150,6 @@ const server = http.createServer(async (req, res) => {
     await selectMessage(long);
     assert.equal(requests.length, 1);
     const submitSelected = page.getByRole('button', { name: '删除所选 (3)', exact: true });
-    const screenshots = process.env.SMS_TEST_ARTIFACTS;
     if (screenshots) {
       await page.getByText('已删除 1 条短信', { exact: true }).waitFor({ state: 'hidden' });
       await page.screenshot({ path: path.join(screenshots, 'sms-batch-desktop.png'), animations: 'disabled' });
@@ -161,13 +200,40 @@ const server = http.createServer(async (req, res) => {
     assert.deepEqual(requests.at(-1).records.map(({ index }) => index), [63, 64]);
     assert.deepEqual([...fixture.keys()], [8, 50]);
 
+    // A notification can arrive while selecting messages; don't discard the selection.
+    const queued = '批量选择期间收到的合成短信';
+    await page.getByRole('button', { name: '批量删除', exact: true }).click();
+    await selectMessage(stale);
+    fixture.set(51, pdu(queued)[0]);
+    await page.clock.fastForward(12_000);
+    await page.locator('.alert-preview').filter({ hasText: queued }).waitFor();
+    assert.equal(await row(queued).count(), 0);
+    await page.getByRole('button', { name: '删除所选 (1)', exact: true }).waitFor();
+    await page.getByRole('button', { name: '取消选择' }).click();
+    await row(queued).waitFor();
+
     supportsDelete = false;
     await page.reload();
     await thread.click();
     await row(stale).waitFor();
     assert.equal(await page.getByRole('button', { name: '批量删除', exact: true }).count(), 0);
     assert.equal(await row(stale).getByRole('button', { name: '删除这条短信' }).count(), 0);
-    console.log('PASS: localhost-only UI fixture; cancel, single, selected batch, one-call multipart, grouped remainder and retry, no delete on legacy backend');
+
+    // The fixture session cannot open the SSE stream. Reuse the actual alert polling interval.
+    const polled = '通过提醒轮询发现的合成短信';
+    await composer.fill('轮询期间保留这条草稿');
+    fixture.set(52, pdu(polled)[0]);
+    await page.clock.fastForward(12_000);
+    await row(polled).waitFor();
+    assert.equal(await composer.inputValue(), '轮询期间保留这条草稿');
+
+    const foreground = '回到前台时读取的合成短信';
+    fixture.set(53, pdu(foreground)[0]);
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await row(foreground).waitFor();
+    assert.equal(await composer.inputValue(), '轮询期间保留这条草稿');
+    assert.deepEqual([...fixture.keys()], [8, 50, 51, 52, 53]);
+    console.log('PASS: mobile list/detail and desktop split view; short code and composer; SMS polling and foreground refresh; single/batch/multipart deletion and legacy capability guards');
   } finally {
     if (browser) await browser.close();
     await new Promise((resolve) => server.close(resolve));

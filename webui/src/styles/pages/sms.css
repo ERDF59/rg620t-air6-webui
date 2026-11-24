@@ -240,6 +240,10 @@
   gap: var(--space-2-5);
 }
 
+.sms-thread-back.semi-button {
+  display: none;
+}
+
 .sms-thread-title {
   color: var(--color-text-primary);
   font-size: var(--font-size-md);
@@ -351,6 +355,45 @@
     flex: 0 0 220px !important;
     border-right: 0;
     border-bottom: 1px solid var(--color-border);
+  }
+
+  .sms-page--device {
+    height: calc(100vh - var(--layout-header-h) - var(--layout-content-pad) * 2);
+    height: calc(100dvh - var(--layout-header-h) - var(--layout-content-pad) * 2);
+    min-height: 420px;
+    gap: var(--space-2);
+  }
+
+  .sms-page--device .sms-shell.semi-layout {
+    min-height: 0;
+  }
+
+  .sms-page--device .sms-contacts {
+    max-height: none;
+    flex: 1 1 auto !important;
+    border-bottom: none;
+  }
+
+  .sms-shell--list .sms-thread,
+  .sms-shell--thread .sms-contacts {
+    display: none !important;
+  }
+
+  .sms-thread-back.semi-button {
+    display: inline-flex;
+    min-width: 44px;
+    min-height: 44px;
+    flex: 0 0 auto;
+    margin-inline-start: calc(var(--space-2) * -1);
+  }
+
+  .sms-page--device .sms-composer {
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .sms-page--device .sms-composer textarea {
+    font-size: var(--font-size-lg);
   }
 
   .sms-page--device .sms-thread-head {

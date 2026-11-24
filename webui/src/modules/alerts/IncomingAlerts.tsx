@@ -3,7 +3,7 @@ import { Button, Notification, Toast } from '@douyinfe/semi-ui';
 import { IconComment, IconPhone } from '@douyinfe/semi-icons';
 import { useNavigate } from 'react-router-dom';
 import { ubus } from '@/services/deviceUbus';
-import { useSmsEvents } from '@/modules/cellular/stream';
+import { SMS_POLL_CHANGE_EVENT, useSmsEvents } from '@/modules/cellular/stream';
 import { decodeDeliver, mergeParts, readableTime, type InboxMessage } from '@/modules/sms/decode';
 
 /** 来电响铃 / 呼叫等待。direction 1 是来电，与语音页 AT+CLCC 的取值一致。 */
@@ -199,7 +199,10 @@ const IncomingAlerts: React.FC = () => {
           }
         }
         if (fresh.some((index) => !knownSms?.has(index))) lastSmsRead = 0;
-        if (!stopped) showSms(mergeParts(decoded));
+        if (!stopped) {
+          if (!fromPush && !liveRef.current) window.dispatchEvent(new Event(SMS_POLL_CHANGE_EVENT));
+          showSms(mergeParts(decoded));
+        }
       } catch {
         /* 下一轮再读 */
       } finally {
