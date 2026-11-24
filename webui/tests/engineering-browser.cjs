@@ -21,6 +21,11 @@ const completeCells = Array.from({length:14}, (_,i)=>{
   const [band,arfcn]=testBands[i % testBands.length];
   return {rat:'NR', band, arfcn, pci:100+i, rsrp:-88-i*1.25, sinr:12-i*1.5, cell:'0'};
 }).flatMap(cell=>[cell,{...cell}]);
+const wideLayoutTest = process.env.WIDE_LAYOUT_TEST;
+const wideBands = {
+  nr: [1, 3, 5, 7, 8, 20, 28, 38, 40, 41, 77, 78, 79],
+  lte: [1, 3, 5, 7, 8, 20, 28, 32, 38, 40, 41, 42, 43],
+};
 let lockOpt=1, lockApi=0, lockList=null, sdkTest=false, availableBytes=60*1024*1024;
 const secondary = { ...carrier, primary:false, arfcn:636666, pci:0, band:78 };
 let modemTemp = '+QTEMP:"","0.0","0"\r\n+QTEMP:"SOC_On_Die","71.8","0"\r\n+QTEMP:"PA_Group1_NTC","63.2","0"\r\n+QTEMP:"RFIC_NTC","-128.0","0"\r\nOK';
@@ -74,8 +79,12 @@ const server = http.createServer(async (req, res) => {
         case 'sdk_identity': result={ok:true,imei:'111111111111111',firmware:null,sim:{state:'ready',number:'+8610000000000',iccid:'12345678901234567890',imsi:'123456789012345'}};break;
         case 'summary':
         case 'overview': result = overview; break;
-        case 'locks': result = { ok: true, ...(lockApi ? {lock_api:lockApi,list:lockList} : {}), cell: lockOpt===null?null:{ opt: lockOpt, rat: 'NR', arfcn: lockArfcn, pci: 0, mode: 3 },
-          supported: { nr: [5, 78], lte: [3] }, current: { nr: [5, 78], lte: [3] } }; break;
+        case 'locks': {
+          const bands = wideLayoutTest ? wideBands : { nr: [5, 78], lte: [3] };
+          result = { ok: true, ...(lockApi ? {lock_api:lockApi,list:lockList} : {}), cell: lockOpt===null?null:{ opt: lockOpt, rat: 'NR', arfcn: lockArfcn, pci: 0, mode: 3 },
+            supported: bands, current: bands };
+          break;
+        }
         case 'cell_set':
           lockArfcn = +params.arfcn;
           if (lockApi) { lockOpt=params.kind==='arfcn'?2:1; result={ok:true,applied:!!params.apply}; }
@@ -138,7 +147,7 @@ const server = http.createServer(async (req, res) => {
   try {
     browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH });
     const origin = 'http://127.0.0.1:' + server.address().port;
-    const ctx = await browser.newContext({ viewport: { width: 1360, height: 960 }, locale: 'zh-CN' });
+    const ctx = await browser.newContext({ viewport: { width: 1360, height: 960 }, locale: 'zh-CN', deviceScaleFactor: wideLayoutTest ? 1.5 : 1 });
     await ctx.route('**/*', (route) => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
     await ctx.addInitScript((session) => sessionStorage.setItem('rg620_ubus_session', session), sid);
     const page = await ctx.newPage();
@@ -158,6 +167,98 @@ const server = http.createServer(async (req, res) => {
         ))));
     };
     const count = (method) => calls.filter((entry) => entry.method === method).length;
+    if (wideLayoutTest) {
+      lockOpt = 0;
+      lockApi = 2;
+      overview.cells = [overview.cells[0], ...completeCells.filter((_, i) => i % 2 === 0)];
+      await page.goto(origin + '/rg620/#/network/setting');
+      await page.locator('.candidate-row').nth(12).waitFor({ state: 'attached' });
+      await page.getByRole('button', { name: '应用 NR 频段' }).waitFor();
+      const measure = () => page.evaluate(() => {
+        const bounds = (el) => {
+          const { left, right, top, bottom, width } = el.getBoundingClientRect();
+          return { left, right, top, bottom, width };
+        };
+        const one = (selector) => document.querySelector(selector);
+        return {
+          main: bounds(one('.app-main')),
+          content: bounds(one('.app-content')),
+          header: bounds(one('.app-header-left')),
+          status: bounds(one('.status-grid').closest('.page-card')),
+          bands: bounds(one('.page-section > .two-col').closest('.page-section')),
+          cells: bounds(one('.candidate-list').closest('.page-section')),
+          list: bounds(one('.candidate-list')),
+          footer: bounds(one('.lock-footer-bar')),
+        };
+      });
+      const screenshot = async (name) => {
+        if (process.env.ENGINEERING_ARTIFACTS) {
+          await page.screenshot({ path: path.join(process.env.ENGINEERING_ARTIFACTS, `lock-${name}.png`), animations: 'disabled', scale: 'css' });
+        }
+      };
+      const results = [];
+      const list = page.locator('.candidate-list');
+      for (const [width, height, split] of [[2500, 1154, true], [1920, 1080, true], [3440, 1440, true], [1440, 900, false], [768, 1024, false], [390, 844, false]]) {
+        await page.setViewportSize({ width, height });
+        await page.waitForFunction((mobile) => document.querySelector('.app-sider').classList.contains('app-sider--mobile') === mobile, width <= 767);
+        const frame = await measure();
+        results.push({ width, height, ...frame });
+        await screenshot(width);
+        if (wideLayoutTest === 'record') continue;
+        await verifyNoOverflow();
+        assert.ok(await list.evaluate(el => el.scrollWidth <= el.clientWidth + 1), `${width}px: candidate columns fit their scroll area`);
+        assert.ok(Math.abs(frame.status.left - frame.header.left) <= 1, `${width}px: title and workspace use the same left edge`);
+        if (split) {
+          assert.ok(frame.content.width > 1440 && frame.content.width <= 1920, `${width}px: content expands without running edge to edge`);
+          assert.ok(Math.abs(frame.bands.top - frame.cells.top) <= 1 && frame.bands.right < frame.cells.left, `${width}px: band controls and cell candidates sit side by side`);
+          assert.ok(frame.cells.width > frame.bands.width && frame.list.top < height, `${width}px: the wider pane shows candidate rows in the first screen`);
+          assert.ok(frame.footer.bottom <= height, `${width}px: the lock actions fit below the scrollable list`);
+        } else {
+          assert.ok(frame.bands.bottom <= frame.cells.top, `${width}px: narrower screens retain the stacked reading order`);
+        }
+      }
+      console.log(JSON.stringify(results, null, 2));
+      if (wideLayoutTest === 'record') return;
+      await page.setViewportSize({ width: 2500, height: 1154 });
+      await page.getByRole('button', { name: 'n78', exact: true }).click();
+      const payload = page.waitForRequest(req => req.url() === origin + '/ubus' && req.postDataJSON()?.params?.[2] === 'band_set');
+      await page.getByRole('button', { name: '应用 NR 频段' }).click();
+      assert.deepEqual((await payload).postDataJSON().params[3], { rat: 'NR', bands: wideBands.nr.filter(band => band !== 78).join(','), confirm: true });
+      await visible('NR 频段已应用');
+      await list.hover();
+      await page.mouse.wheel(0, 120);
+      await page.waitForFunction(() => document.querySelector('.candidate-list').scrollTop > 0);
+      assert.ok(await list.evaluate(el => Math.abs(el.querySelector('.candidate-head').getBoundingClientRect().top - el.getBoundingClientRect().top) <= 6), 'column headings stay visible during scroll');
+      await page.mouse.wheel(0, -160);
+      await page.waitForFunction(() => document.querySelector('.candidate-list').scrollTop === 0);
+      const row = page.locator('.candidate-row').first();
+      const checkbox = row.getByRole('checkbox');
+      await row.locator('.semi-checkbox-inner-display').click();
+      assert.ok(await checkbox.isChecked());
+      await row.locator('.candidate-freq').click();
+      assert.ok(!(await checkbox.isChecked()), 'the whole row can still toggle the candidate');
+      await checkbox.press('Space');
+      assert.ok(await checkbox.isChecked(), 'keyboard selection toggles once');
+      await page.getByRole('button', { name: '锁定主小区', exact: true }).click({ trial: true });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.locator('.app-sider--mobile').waitFor({ state: 'attached' });
+      assert.ok(await checkbox.isChecked(), 'selection survives reflow');
+      await verifyNoOverflow();
+      await page.locator('.candidate-list').scrollIntoViewIfNeeded();
+      await screenshot('mobile-candidates');
+      await page.setViewportSize({ width: 2500, height: 1154 });
+      await page.getByRole('button', { name: '切换主题' }).click();
+      await page.evaluate(() => scrollTo(0, 0));
+      await screenshot('wide-dark');
+      await nav('网络状态');
+      await page.locator('.carrier-card--primary').waitFor();
+      assert.equal(await page.locator('.app-content').evaluate(el => getComputedStyle(el).containerType), 'normal');
+      await verifyNoOverflow();
+      await screenshot('wide-network');
+      assert.deepEqual(browserErrors, []);
+      console.log('PASS: wide lock workspace, narrow layout, band action and cell selection retained on resize');
+      return;
+    }
     if(process.env.MODEM_CARD_TEST){
       sdkTest=true;await page.setViewportSize({width:390,height:844});await page.goto(origin+'/rg620/#/system/info');
       const card=(title)=>page.locator('.page-card').filter({has:page.getByText(title,{exact:true})});

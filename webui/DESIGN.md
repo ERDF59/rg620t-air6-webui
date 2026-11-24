@@ -81,10 +81,11 @@ description: 5G CPE 本机管理界面的设计与前端规范（后续开发一
 
 ## Layout
 
-- **框架**：左侧导航 `--layout-sider-w` + 吸顶顶栏 `--layout-header-h` + 内容区（最大宽 `--layout-content-max`，内边距 `--layout-content-pad`）。窄屏（≤767px）侧栏变抽屉，布局 token 自动收紧。
+- **框架**：左侧导航 `--layout-sider-w` + 吸顶顶栏 `--layout-header-h` + 内容区（内边距 `--layout-content-pad`）。设备控制台上限用 `--layout-content-wide`，顶栏和内容区对齐；旧控制台仍用 `--layout-content-max`。窄屏（≤767px）侧栏变抽屉，布局 token 自动收紧。
 - **间距阶梯**（4px 基准）：`--space-0-5` 2 · `--space-1` 4 · `--space-1-5` 6 · `--space-2` 8 · `--space-2-5` 10 · `--space-3` 12 · `--space-3-5` 14 · `--space-4` 16 · `--space-5` 20 · `--space-6` 24 · `--space-8` 32。
 - **节奏**：页面区块之间 20px（`page-stack`）；区块标题与内容 12px（`page-section`）；卡片之间 `--layout-gap`；卡片内边距 `--layout-card-pad`；卡内分组之间用 `card-divider`。组内紧、组间松，标题上方留白大于下方。
 - **栅格**：KPI 条 4 列 → ≤960px 2 列 → ≤360px 1 列；主区 `bento-primary`（1.6fr : 1fr）与 `two-col` 在 ≤1180px / ≤960px 变单列。
+- **宽屏锁频**：按实际内容区宽度并排显示频段和候选小区，而不是放大文字。窄屏保持从上到下；候选列表保留固定可滚动区域。
 - **断点只允许**：1180 / 960 / 767 / 520 / 360（`max-width`，含该值）。TS 侧用 `maxWidth('sm')`（`src/ui/tokens.ts`），CSS 侧由 lint 校验。
 
 ## Elevation & Depth

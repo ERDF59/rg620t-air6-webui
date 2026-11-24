@@ -155,7 +155,7 @@ const DeviceLayout: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         <div className="app-scrim" aria-hidden="true" onClick={() => setMobileOpen(false)} />
       ) : null}
 
-      <Layout className="app-main">
+      <Layout className="app-main app-main--device">
         <Header className="app-header">
           <div className="app-header-left">
             {isMobile ? (

@@ -126,6 +126,7 @@
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   /* ---------- 层级 ---------- */
+  --z-section-sticky: 1;
   --z-header: 30;
   --z-scrim: 35;
   --z-sider: 40;
@@ -140,9 +141,12 @@
   --layout-header-h: 60px;
   --layout-sider-w: 240px;
   --layout-content-max: 1440px;
+  --layout-content-wide: 1920px;
   --layout-content-pad: var(--space-6);
   --layout-card-pad: var(--space-5);
   --layout-gap: var(--space-4);
+  --layout-candidate-list-max: 340px;
+  --layout-candidate-list-wide: clamp(240px, 33vh, 420px);
 }
 
 /* 窄屏只收紧布局类 token，组件内部间距保持不变 */

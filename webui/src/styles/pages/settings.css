@@ -80,22 +80,30 @@
   display: grid;
   align-items: center;
   gap: var(--space-3);
-  grid-template-columns: 20px 56px 120px 100px 110px minmax(0, 1fr);
+  grid-template-columns: var(--candidate-columns);
 }
 
 .candidate-head {
-  padding: 0 var(--space-3) var(--space-2);
+  position: sticky;
+  top: 0;
+  z-index: var(--z-section-sticky);
+  padding: var(--space-2);
   color: var(--color-text-tertiary);
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-semibold);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .candidate-list {
+  --candidate-columns: 20px 56px minmax(56px, 1.25fr) minmax(48px, 0.85fr) minmax(58px, 1fr) minmax(86px, 1.2fr);
+  isolation: isolate;
   display: flex;
-  max-height: 340px;
+  max-height: calc(var(--layout-candidate-list-max) + var(--control-h-md));
   flex-direction: column;
   gap: var(--space-0-5);
   overflow-y: auto;
+  scroll-padding-block-start: calc(var(--control-h-md) + var(--space-2));
   padding: var(--space-1);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -169,6 +177,32 @@
   flex-wrap: wrap;
 }
 
+/* 内容有足够宽度时，频段设置与候选小区互不占用纵向空间。 */
+@container lock-content (min-width: 90rem) {
+  .lock-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 9fr);
+    align-items: start;
+    column-gap: var(--layout-gap);
+  }
+
+  .lock-workspace > :not(.lock-band-section, .lock-cell-section) {
+    grid-column: 1 / -1;
+  }
+
+  .lock-band-section > .two-col {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lock-cell-section .manual-row {
+    grid-template-columns: auto minmax(0, 1.5fr) minmax(0, 1fr) auto;
+  }
+
+  .lock-cell-section .candidate-list {
+    max-height: var(--layout-candidate-list-wide);
+  }
+}
+
 @media (max-width: 1180px) {
   .status-grid {
     grid-template-columns: 1fr;
@@ -188,9 +222,10 @@
     display: none;
   }
 
-  .candidate-head,
-  .candidate-row {
-    grid-template-columns: 20px 48px minmax(0, 1fr) 80px;
+  .candidate-list {
+    --candidate-columns: 20px 48px minmax(0, 1fr) 80px;
+    max-height: var(--layout-candidate-list-max);
+    scroll-padding-block-start: 0;
   }
 
   .candidate-rsrp,

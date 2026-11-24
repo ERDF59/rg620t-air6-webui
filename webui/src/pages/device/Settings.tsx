@@ -280,7 +280,7 @@ const Settings: React.FC = () => {
     );
 
   return (
-    <div className="page-stack">
+    <div className="page-stack lock-workspace">
       {/* 当前生效锁定状态 */}
       <PageCard
         variant="hero"
@@ -377,7 +377,7 @@ const Settings: React.FC = () => {
       </PageCard>
 
       {/* 频段锁定 */}
-      <section className="page-section">
+      <section className="page-section lock-band-section">
         <SectionHeader title="锁频段" desc="点选需要保留的频段；全部取消并应用即恢复自动选择" />
         <TwoCol>
           <PageCard
@@ -471,7 +471,7 @@ const Settings: React.FC = () => {
       </section>
 
       {/* 小区锁定 */}
-      <section className="page-section">
+      <section className="page-section lock-cell-section">
         <SectionHeader
           title="小区锁定与白名单"
           desc={extended ? '选一个小区可锁定主小区或只锁频点；选多个可提交白名单' : '选一个小区锁定为主小区，选多个可提交白名单'}
@@ -590,15 +590,15 @@ const Settings: React.FC = () => {
             </div>
           </div>
 
-          <div className="candidate-head">
-            <span />
-            <span>制式</span>
-            <span>频点 ARFCN</span>
-            <span>PCI</span>
-            <span>RSRP</span>
-            <span className="candidate-head-status">状态</span>
-          </div>
           <div className="candidate-list">
+            <div className="candidate-head">
+              <span />
+              <span>制式</span>
+              <span>频点 ARFCN</span>
+              <span>PCI</span>
+              <span>RSRP</span>
+              <span className="candidate-head-status">状态</span>
+            </div>
             {candidates.map((item) => {
               const active = picked.some((entry) => keyOf(entry) === keyOf(item));
               const lockedHere = Boolean(
@@ -608,8 +608,15 @@ const Settings: React.FC = () => {
                   (locks.cell.opt === 2 || locks.cell.pci === item.pci),
               );
               return (
-                <label className={`candidate-row${active ? ' active' : ''}`} key={keyOf(item)}>
-                  <Checkbox checked={active} onChange={() => togglePicked(item)} />
+                <div className={`candidate-row${active ? ' active' : ''}`} key={keyOf(item)} onClick={() => togglePicked(item)}>
+                  <Checkbox
+                    aria-label={`选择 ${labelOf(item)}`}
+                    checked={active}
+                    onChange={(event) => {
+                      event.stopPropagation();
+                      togglePicked(item);
+                    }}
+                  />
                   <span className={`neighbor-rat neighbor-rat--${item.rat.toLowerCase()}`}>{item.rat}</span>
                   <span className="candidate-freq">{item.arfcn}</span>
                   <span className="candidate-pci">PCI {item.pci}</span>
@@ -626,7 +633,7 @@ const Settings: React.FC = () => {
                       </Tag>
                     ) : null}
                   </span>
-                </label>
+                </div>
               );
             })}
             {!candidates.length ? (

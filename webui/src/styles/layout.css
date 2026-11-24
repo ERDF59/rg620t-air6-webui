@@ -16,6 +16,10 @@
   min-width: 0;
 }
 
+.app-main--device {
+  --app-content-max: var(--layout-content-wide);
+}
+
 .app-sider {
   position: sticky;
   top: 0;
@@ -201,6 +205,11 @@
   border-bottom: 1px solid var(--color-border);
 }
 
+/* 顶栏与正文共用内容边线；超过上限的空间留在工作区两侧。 */
+.app-main--device > .app-header {
+  padding-inline: max(var(--layout-content-pad), calc((100% - var(--app-content-max)) / 2 + var(--layout-content-pad)));
+}
+
 .app-header-left,
 .app-header-right {
   display: flex;
@@ -282,10 +291,14 @@
 
 .app-content {
   width: 100%;
-  max-width: var(--layout-content-max);
+  max-width: var(--app-content-max, var(--layout-content-max));
   min-height: calc(100vh - var(--layout-header-h) - 44px);
   margin: 0 auto;
   padding: var(--layout-content-pad);
+}
+
+.app-content:has(> .lock-workspace) {
+  container: lock-content / inline-size;
 }
 
 .app-footer {
