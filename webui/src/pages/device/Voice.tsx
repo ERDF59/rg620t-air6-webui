@@ -5,12 +5,18 @@ import { Metric, PageCard, TwoCol } from '@/ui/widgets';
 import { TAG_COLOR } from '@/ui/tokens';
 import { ubus } from '@/services/deviceUbus';
 import WebAudio from '@/modules/webvoice/WebAudio';
+import { unlockAudio } from '@/modules/webvoice/audio';
+import { clearVoiceIntent, prepareVoiceAudio, type VoiceTarget } from '@/modules/webvoice/intent';
 import CallServices from '@/modules/cellular/CallServices';
 import { useSdkAccess } from '@/modules/cellular/sdk';
 
 type Call = { id: number; direction: number; state: number; kind: number; number: string; voice?: boolean };
 type VoiceStatus = { ok?: boolean; browser_audio?: boolean; read_only?: boolean; calls?: Call[]; error?: string };
 type Checks = { ok?: boolean; sim?: string; radio?: boolean; ims?: boolean; ceer?: number; ratmode?: string };
+type PendingAction =
+  | { action: 'dial'; text: string; number: string }
+  | { action: 'answer'; text: string; call: Call }
+  | { action: 'hangup'; text: string };
 
 const STATES = ['已接通', '保持', '拨号中', '等待对方接听', '来电响铃', '呼叫等待', '正在挂断'];
 const KEYS: Array<{ main: string; sub: string }> = [
@@ -55,11 +61,12 @@ const Voice: React.FC = () => {
   const [number, setNumber] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState('');
-  const [pending, setPending] = useState<{ action: 'dial' | 'answer' | 'hangup'; text: string } | null>(null);
+  const [pending, setPending] = useState<PendingAction | null>(null);
   const [reading, setReading] = useState(true);
   const keyPending = useRef(false);
   const timer = useRef<number>();
   const alive = useRef(true);
+  const cancelAudioOnLeave = useRef<() => void>();
 
   const readStatus = useCallback(async () => {
     for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -86,6 +93,7 @@ const Voice: React.FC = () => {
         setReading(false);
         if (!silent && note) setNote('');
       } else {
+        clearVoiceIntent();
         setStatus(null);
         setReading(false);
       }
@@ -111,6 +119,7 @@ const Voice: React.FC = () => {
     return () => {
       alive.current = false;
       window.clearInterval(timer.current);
+      cancelAudioOnLeave.current?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -122,8 +131,14 @@ const Voice: React.FC = () => {
   const ringing = only?.state === 4 && only?.direction === 1;
   const audioAvailable = status?.browser_audio === true;
 
-  const act = async (name: string, method: string, params: Record<string, unknown>, okText: string) => {
+  useEffect(() => {
+    if (status?.ok && (!audioAvailable || status.read_only)) clearVoiceIntent();
+  }, [status, audioAvailable]);
+
+  const act = async (name: string, method: string, params: Record<string, unknown>, okText: string, voiceTarget?: VoiceTarget) => {
     if (name === 'dtmf') { if (keyPending.current) return; keyPending.current = true; }
+    const audioIntent = voiceTarget && audioAvailable && !status?.read_only ? prepareVoiceAudio(voiceTarget) : undefined;
+    if (audioIntent) cancelAudioOnLeave.current = audioIntent.cancel;
     setBusy(name);
     setNote('');
     try {
@@ -136,6 +151,7 @@ const Voice: React.FC = () => {
         setNote(pickError(result.error));
         Toast.error(pickError(result.error));
       } else {
+        if (result?.ok === true) audioIntent?.accept();
         setNote(okText);
         Toast.success(okText);
       }
@@ -154,7 +170,7 @@ const Voice: React.FC = () => {
       setNote('号码需要 3-15 位数字，可以带 + 号。');
       return;
     }
-    setPending({ action: 'dial', text: `确认拨打 ${target}？` });
+    setPending({ action: 'dial', text: `确认拨打 ${target}？`, number: target });
   };
 
   const statusText = useMemo(() => {
@@ -258,7 +274,7 @@ const Voice: React.FC = () => {
               type="primary"
               disabled={!ringing}
               loading={busy === 'answer'}
-              onClick={() => setPending({ action: 'answer', text: `接听 ${only?.number || '这通来电'}？` })}
+              onClick={() => { if (only) setPending({ action: 'answer', text: `接听 ${only.number || '这通来电'}？`, call: only }); }}
             >
               接听来电
             </Button>
@@ -273,8 +289,8 @@ const Voice: React.FC = () => {
             </Button>
           </div>
 
-          {audioAvailable && !status?.read_only ? (
-            <WebAudio call={only && (only.kind === 0 || only.voice) ? only : null} />
+          {audioAvailable && status?.ok && !status.read_only ? (
+            <WebAudio status={status} />
           ) : null}
           {checks.ims === false ? (
             <Banner
@@ -356,12 +372,15 @@ const Voice: React.FC = () => {
               type="danger"
               theme="solid"
               onClick={() => {
-                const { action } = pending;
                 setPending(null);
-                if (action === 'dial') {
-                  act('dial', 'voice_dial', { number: number.trim().replace(/[ -]/g, '') }, '已请求拨号');
-                } else if (action === 'answer') {
-                  act('answer', 'voice_answer', { id: String(only?.id ?? 0) }, '已请求接听');
+                clearVoiceIntent();
+                if (pending.action !== 'hangup') unlockAudio();
+                if (pending.action === 'dial') {
+                  act('dial', 'voice_dial', { number: pending.number }, '已请求拨号', { direction: 0, number: pending.number });
+                } else if (pending.action === 'answer') {
+                  const { id, number: peer } = pending.call;
+                  act('answer', 'voice_answer', { id: String(id), ringing_only: true, peer }, '已请求接听',
+                    { direction: 1, id, number: peer });
                 } else {
                   act('hangup', 'voice_hangup', { id: String(only?.id ?? 0) }, '已请求挂断');
                 }

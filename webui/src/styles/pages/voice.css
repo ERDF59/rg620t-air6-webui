@@ -150,6 +150,51 @@
   font-weight: var(--font-weight-semibold);
 }
 
+.voice-audio {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.voice-audio.is-live {
+  background: color-mix(in srgb, var(--color-success) 7%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-success) 26%, var(--color-border));
+}
+
+.voice-audio-head {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.voice-audio-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+}
+
+.voice-audio-note {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+}
+
+.voice-audio-actions:empty {
+  display: none;
+}
+
 @media (max-width: 767px) {
   .confirm-bar {
     right: var(--space-3);
@@ -159,14 +204,12 @@
     flex-direction: column;
     align-items: stretch;
   }
-}
 
-.voice-web-audio { margin-top: var(--space-4); border-top: 1px solid var(--color-border); padding-top: var(--space-3); }
-.voice-web-audio h3 { margin: 0; color: var(--color-text-primary); font-size: var(--font-size-md); }
-.voice-web-audio .dcx-audio-state { margin: var(--space-2) 0; font-weight: var(--font-weight-semibold); }
-.voice-web-audio [data-phase="live"] .dcx-audio-state { color: var(--color-success); }
-.voice-web-audio .dcx-message { color: var(--color-text-secondary); font-size: var(--font-size-sm); }
-.voice-web-audio .dcx-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.voice-web-audio .dcx-button { padding: var(--space-2) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface); color: var(--color-accent-text); font: inherit; cursor: pointer; }
-.voice-web-audio .dcx-button:disabled { color: var(--color-text-tertiary); cursor: default; }
-.voice-web-audio audio { display: none; }
+  .voice-audio {
+    padding: var(--space-3);
+  }
+
+  .voice-audio-actions > .semi-button {
+    flex: 1 1 auto;
+  }
+}

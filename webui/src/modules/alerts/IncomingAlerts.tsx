@@ -5,6 +5,9 @@ import { useNavigate } from 'react-router-dom';
 import { ubus } from '@/services/deviceUbus';
 import { SMS_POLL_CHANGE_EVENT, useSmsEvents } from '@/modules/cellular/stream';
 import { decodeDeliver, mergeParts, readableTime, type InboxMessage } from '@/modules/sms/decode';
+import { installAudioUnlock, unlockAudio } from '@/modules/webvoice/audio';
+import { clearVoiceIntent, prepareVoiceAudio } from '@/modules/webvoice/intent';
+import { startRingtone, stopRingtone } from './ringtone';
 
 /** 来电响铃 / 呼叫等待。direction 1 是来电，与语音页 AT+CLCC 的取值一致。 */
 const INCOMING_STATES = new Set([4, 5]);
@@ -12,7 +15,7 @@ const CALL_POLL_MS = 4000;
 const SMS_POLL_MS = 12000;
 
 type Call = { id: number; direction: number; state: number; number: string; kind?: number; voice?: boolean };
-type VoiceStatus = { ok?: boolean; calls?: Call[]; read_only?: boolean; error?: string };
+type VoiceStatus = { ok?: boolean; calls?: Call[]; read_only?: boolean; browser_audio?: boolean; error?: string };
 type Inbox = { ok?: boolean; indexes?: number[] };
 type ReadResult = { ok?: boolean; pdu?: string };
 
@@ -29,6 +32,8 @@ const IncomingAlerts: React.FC = () => {
   liveRef.current = live;
   const pollSmsRef = useRef<() => void>(() => {});
   const lastPush = useRef<number | null>(null);
+
+  useEffect(() => installAudioUnlock(), []);
 
   useEffect(() => {
     let stopped = false;
@@ -52,9 +57,14 @@ const IncomingAlerts: React.FC = () => {
       navigateRef.current('/network/voice');
     };
 
-    const controlCall = async (call: Call, method: 'voice_answer' | 'voice_hangup', okText: string) => {
+    const controlCall = async (call: Call, method: 'voice_answer' | 'voice_hangup', okText: string, audioAvailable: boolean) => {
       if (stopped || inFlight.has(call.id)) return;
       inFlight.add(call.id);
+      stopRingtone();
+      clearVoiceIntent();
+      if (method === 'voice_answer') unlockAudio();
+      const audioIntent = method === 'voice_answer' && audioAvailable
+        ? prepareVoiceAudio({ direction: 1, id: call.id, number: call.number || '' }) : undefined;
       try {
         const result = await ubus<{ ok?: boolean; error?: string }>('dlink-cellular', method, {
           id: String(call.id),
@@ -66,6 +76,7 @@ const IncomingAlerts: React.FC = () => {
           Toast.error(result?.error === 'call_changed' ? '来电状态已变化，本次未执行。' : result?.error || '操作失败');
           return;
         }
+        audioIntent?.accept();
         Toast.success(okText);
         openCall(call.id);
       } catch (error) {
@@ -75,7 +86,7 @@ const IncomingAlerts: React.FC = () => {
       }
     };
 
-    const showCall = (call: Call, actionable: boolean) => {
+    const showCall = (call: Call, actionable: boolean, audioAvailable: boolean) => {
       const who = call.number || '未知号码';
       Notification.warning({
         id: noticeId('call', call.id),
@@ -86,10 +97,10 @@ const IncomingAlerts: React.FC = () => {
             <div className="alert-preview">{call.state === 5 ? '当前线路忙，另一通来电正在等待。' : actionable ? '正在响铃，可直接接听或拒接。' : '请查看当前通话状态。'}</div>
             <div className="alert-actions">
               {actionable && <>
-              <Button size="small" theme="solid" type="primary" onClick={() => controlCall(call, 'voice_answer', '已请求接听')}>
+              <Button size="small" theme="solid" type="primary" onClick={() => controlCall(call, 'voice_answer', '已请求接听', audioAvailable)}>
                 接听
               </Button>
-              <Button size="small" type="danger" onClick={() => controlCall(call, 'voice_hangup', '已请求拒接')}>
+              <Button size="small" type="danger" onClick={() => controlCall(call, 'voice_hangup', '已请求拒接', audioAvailable)}>
                 拒接
               </Button>
               </>}
@@ -143,7 +154,8 @@ const IncomingAlerts: React.FC = () => {
       readingCalls = true;
       try {
         const status = await ubus<VoiceStatus>('dlink-cellular', 'voice_status');
-        if (stopped || !status?.ok) return;
+        if (stopped) return;
+        if (!status?.ok) { stopRingtone(); return; }
         const incoming = (status.calls || []).filter(
           (call) => call.direction === 1 && INCOMING_STATES.has(call.state),
         );
@@ -156,12 +168,16 @@ const IncomingAlerts: React.FC = () => {
         }
         for (const call of incoming) {
           const actionable = status.calls?.length === 1 && !status.read_only && call.state === 4 && (call.kind === 0 || call.voice === true);
-          const signature = JSON.stringify([call.state, call.number, actionable]);
+          const audioAvailable = status.browser_audio === true && !status.read_only;
+          const signature = JSON.stringify([call.state, call.number, actionable, audioAvailable]);
           if (ringing.get(call.id) === signature) continue;
           ringing.set(call.id, signature);
-          showCall(call, actionable);
+          showCall(call, actionable, audioAvailable);
         }
+        if (incoming.some((call) => call.state === 4 && !inFlight.has(call.id))) startRingtone();
+        else stopRingtone();
       } catch {
+        stopRingtone();
         /* 与语音页共用基带锁，忙或短暂失败留给下一轮 */
       } finally {
         readingCalls = false;
@@ -224,6 +240,8 @@ const IncomingAlerts: React.FC = () => {
       pollSmsRef.current = () => {};
       window.clearInterval(callTimer);
       window.clearInterval(smsTimer);
+      stopRingtone();
+      clearVoiceIntent();
       ringing.forEach((_, id) => Notification.close(noticeId('call', id)));
       smsNotices.forEach((id) => Notification.close(id));
     };

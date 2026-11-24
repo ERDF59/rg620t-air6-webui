@@ -46,7 +46,8 @@ npm run build -- --mode dlink
 
 - **信号、锁频/锁小区、短信**：界面经 `deviceUbus.ts` 调用 `dlink-cellular`。对应 rpcd 方法、ACL 和调用的 shell / C 程序都在 `backend/cellular/`。
 - **来电提醒和按键**：`webui/src/modules/alerts/IncomingAlerts.tsx` 处理跨页面来电和新短信；弹窗的接听／拒接会在后端再核对通话。通话中的 DTMF 由 `backend/cellular/src/dtmf.c` 通过 MIPC 发送。
-- **浏览器语音**：`webui/src/modules/webvoice/` 对接 `dlink-webvoice`；网关管理 WebRTC 会话，`rx.c` 读设备音频，`tx.c` 将上行音频送到设备语音服务。实际使用要有受浏览器信任的 HTTPS 和麦克风权限。
+- **浏览器语音**：设备声明支持网页音频时，在语音页拨号，或在语音页／来电提醒接听，确认是这通电话接通后会尝试连接音频。无法核对通话时用手动连接；断开音频不会挂断电话。需要连接设备局域网、使用受浏览器信任的 HTTPS 并允许麦克风。若浏览器拦截声音，点「播放通话声音」。音频由 `dlink-webvoice` 的 WebRTC 网关传输，`rx.c` 和 `tx.c` 负责设备侧收发。
+- **来电声音**：打开控制台后先点一次页面，让浏览器允许播放；来电会响铃，支持振动的浏览器也会振动。网页关闭或在后台时不保证提醒。
 
 手机端短信中心先显示会话列表，点开后只显示对话和回复框；桌面继续并排显示。收到推送、提醒轮询发现新短信或切回前台时，短信页会重新读取；批量选择和发送、删除期间先保留当前操作。
 
